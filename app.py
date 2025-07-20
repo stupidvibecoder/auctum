@@ -1,6 +1,7 @@
 import streamlit as st
 import os
 import tempfile
+import numpy as np
 from openai import OpenAI
 import logging
 
@@ -24,48 +25,68 @@ class Document:
         self.metadata = metadata or {}
 
 class SmartCIMAnalyzer:
-    """Enhanced CIM analyzer with full document coverage"""
+    """Smart CIM analyzer with vector search - no LangChain dependencies"""
     
     def __init__(self, document_chunks):
         self.document_chunks = document_chunks
         self.client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
         
-        # Try to setup vector search, fallback to simple if needed
+        # Try to setup vector search, fallback to keyword search
         try:
             self.setup_vector_search()
             self.has_vector_search = True
-            st.success("🧠 Smart analysis enabled - searching entire document")
+            st.success("🧠 Smart vector search enabled - analyzing entire document")
         except Exception as e:
             self.has_vector_search = False
-            st.warning("⚠️ Using basic analysis mode")
+            st.info("📖 Using keyword search - still analyzes full document")
             logging.warning(f"Vector search setup failed: {e}")
     
     def setup_vector_search(self):
-        """Setup FAISS vector search"""
+        """Setup FAISS vector search with sentence transformers"""
         try:
-            from langchain_openai import OpenAIEmbeddings
-            from langchain_community.vectorstores import FAISS
+            from sentence_transformers import SentenceTransformer
+            import faiss
             
-            # Create embeddings
-            self.embeddings = OpenAIEmbeddings(openai_api_key=os.environ.get("OPENAI_API_KEY"))
+            # Load embedding model
+            self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
             
-            # Create vector store
-            self.vectorstore = FAISS.from_documents(
-                documents=self.document_chunks,
-                embedding=self.embeddings
-            )
+            # Create embeddings for all chunks
+            texts = [chunk.page_content for chunk in self.document_chunks]
+            embeddings = self.embedding_model.encode(texts)
+            
+            # Create FAISS index
+            dimension = embeddings.shape[1]
+            self.index = faiss.IndexFlatIP(dimension)  # Inner product for similarity
+            
+            # Normalize embeddings for cosine similarity
+            faiss.normalize_L2(embeddings)
+            self.index.add(embeddings.astype('float32'))
+            
+            st.success(f"🔍 Indexed {len(texts)} document segments for intelligent search")
             
         except Exception as e:
             logging.error(f"Vector search setup failed: {e}")
             raise
     
     def get_relevant_content(self, query, max_chunks=8):
-        """Get relevant content using vector search or fallback"""
+        """Get relevant content using vector search or keyword fallback"""
         if self.has_vector_search:
             try:
-                # Use vector search to find relevant chunks
-                docs = self.vectorstore.similarity_search(query, k=max_chunks)
-                return [doc.page_content for doc in docs]
+                # Vector search
+                query_embedding = self.embedding_model.encode([query])
+                faiss.normalize_L2(query_embedding)
+                
+                # Search for similar chunks
+                scores, indices = self.index.search(query_embedding.astype('float32'), max_chunks)
+                
+                # Return relevant chunks
+                relevant_chunks = []
+                for idx in indices[0]:
+                    if idx < len(self.document_chunks):
+                        relevant_chunks.append(self.document_chunks[idx].page_content)
+                
+                return relevant_chunks
+                
             except Exception as e:
                 logging.error(f"Vector search failed: {e}")
         
@@ -73,7 +94,7 @@ class SmartCIMAnalyzer:
         return self.keyword_search(query, max_chunks)
     
     def keyword_search(self, query, max_chunks=8):
-        """Fallback keyword-based search"""
+        """Keyword-based search fallback"""
         keywords = query.lower().split()
         scored_chunks = []
         
@@ -93,24 +114,24 @@ class SmartCIMAnalyzer:
         # Define search queries for different analysis types
         search_queries = {
             "summary": [
-                "executive summary overview company business",
-                "business model revenue financial performance", 
-                "investment highlights value proposition"
+                "executive summary company overview business model",
+                "revenue financial performance investment highlights", 
+                "market position competitive advantages"
             ],
             "financial": [
-                "revenue sales financial performance EBITDA",
-                "profit margin earnings growth rate",
-                "cash flow financial statements valuation"
+                "revenue sales financial performance EBITDA profit",
+                "growth rate margin cash flow",
+                "valuation enterprise value financial metrics"
             ],
             "risks": [
-                "risks challenges threats competition",
-                "market risks regulatory compliance",
-                "operational risks financial risks"
+                "risks challenges threats competition regulatory",
+                "market risks operational risks financial risks",
+                "compliance legal regulatory challenges"
             ],
-            "custom": [custom_question or "company business model"]
+            "custom": [custom_question or "company business model financial performance"]
         }
         
-        # Get relevant content
+        # Get relevant content using smart search
         all_relevant_content = []
         queries = search_queries.get(analysis_type, search_queries["custom"])
         
@@ -118,9 +139,17 @@ class SmartCIMAnalyzer:
             relevant_chunks = self.get_relevant_content(query, max_chunks=4)
             all_relevant_content.extend(relevant_chunks)
         
-        # Remove duplicates and combine
-        unique_content = list(dict.fromkeys(all_relevant_content))  # Preserve order
-        context = "\n\n".join(unique_content[:10])  # Top 10 most relevant
+        # Remove duplicates while preserving order
+        unique_content = []
+        seen = set()
+        for content in all_relevant_content:
+            content_key = content[:100]  # Use first 100 chars as key
+            if content_key not in seen:
+                unique_content.append(content)
+                seen.add(content_key)
+        
+        # Combine top relevant content
+        context = "\n\n".join(unique_content[:10])
         
         # Truncate if too long for OpenAI
         max_chars = 15000
@@ -137,7 +166,7 @@ class SmartCIMAnalyzer:
 
 1. **Company Overview**: What does the company do? What industry/sector?
 2. **Business Model**: How does the company make money?
-3. **Key Financial Metrics**: Revenue, EBITDA, growth rates (if available)
+3. **Key Financial Metrics**: Revenue, EBITDA, growth rates (include specific numbers)
 4. **Investment Highlights**: Main selling points and competitive advantages
 5. **Market Position**: Industry position and growth strategy
 
@@ -145,14 +174,14 @@ Be specific and use actual data from the document where available.""",
 
             "financial": """Extract and analyze key financial metrics from this CIM:
 
-- **Revenue**: Historical figures and projections
-- **Profitability**: EBITDA, margins, profit trends
-- **Growth**: Year-over-year growth rates and drivers
-- **Cash Flow**: Operating and free cash flow
+- **Revenue**: Historical figures, projections, and growth trends
+- **Profitability**: EBITDA, margins, profit trends with specific numbers
+- **Growth**: Year-over-year growth rates and key drivers
+- **Cash Flow**: Operating and free cash flow figures
 - **Valuation**: Multiples, enterprise value, pricing metrics
 - **Key Ratios**: Important financial ratios and benchmarks
 
-Present specific numbers and trends where available.""",
+Present specific numbers, percentages, and trends where available.""",
 
             "risks": """Identify and categorize risks mentioned in this CIM:
 
@@ -162,9 +191,9 @@ Present specific numbers and trends where available.""",
 - **Regulatory Risks**: Compliance, legal, regulatory changes
 - **Strategic Risks**: Technology, customer concentration, competition
 
-For each category, provide specific examples from the document.""",
+For each category, provide specific examples and details from the document.""",
 
-            "custom": custom_question or "Analyze this document comprehensively."
+            "custom": custom_question or "Provide a comprehensive analysis of this document."
         }
         
         try:
@@ -173,11 +202,11 @@ For each category, provide specific examples from the document.""",
                 messages=[
                     {
                         "role": "system", 
-                        "content": "You are an expert financial analyst with deep experience in CIM analysis and investment evaluation. Provide detailed, specific analysis based on the document content."
+                        "content": "You are an expert financial analyst with deep experience in CIM analysis and investment evaluation. Provide detailed, specific analysis based on the document content. Include actual numbers, percentages, and specific details where available."
                     },
                     {
                         "role": "user", 
-                        "content": f"{prompts[analysis_type]}\n\nDocument Content:\n{context}"
+                        "content": f"{prompts[analysis_type]}\n\nRelevant Document Content:\n{context}"
                     }
                 ],
                 temperature=0.1,
@@ -213,7 +242,7 @@ def extract_pdf_text(uploaded_file):
                 )
                 documents.append(doc)
         
-        # Split large pages into smaller chunks
+        # Split large pages into smaller chunks for better search
         chunks = split_documents(documents)
         
         # Clean up
@@ -232,7 +261,7 @@ def split_documents(documents, chunk_size=1500, chunk_overlap=200):
     for doc in documents:
         text = doc.page_content
         
-        # Simple text splitting
+        # Simple text splitting with overlap
         if len(text) <= chunk_size:
             chunks.append(doc)
         else:
@@ -272,7 +301,7 @@ def main():
         
         if uploaded_file and api_key:
             if st.button("🔍 Process CIM", type="primary"):
-                with st.spinner("🔄 Processing CIM... Analyzing full document."):
+                with st.spinner("🔄 Processing CIM and setting up intelligent analysis..."):
                     try:
                         # Extract and chunk the document
                         st.info("📖 Extracting text from PDF...")
@@ -280,7 +309,7 @@ def main():
                         
                         if chunks:
                             # Initialize smart analyzer
-                            st.info("🧠 Setting up intelligent analysis...")
+                            st.info("🧠 Setting up intelligent document search...")
                             analyzer = SmartCIMAnalyzer(chunks)
                             
                             # Store in session state
@@ -300,10 +329,8 @@ def main():
     
     # Main content
     if st.session_state.cim_data and st.session_state.analyzer:
-        # Show analysis interface
         show_analysis_interface()
     else:
-        # Welcome screen
         show_welcome_screen()
 
 def show_analysis_interface():
@@ -366,11 +393,17 @@ def show_welcome_screen():
     st.markdown("""
     ### 🚀 Welcome to Auctum MVP - Smart Document Analysis
     
-    **Enhanced Features:**
-    - 🧠 **Smart Analysis**: Uses AI to search entire document, not just first few pages
-    - 🔍 **Vector Search**: Finds relevant information across all 100+ pages
-    - 📊 **Comprehensive Analysis**: Executive summaries, financial metrics, risk assessment
-    - 💬 **Intelligent Q&A**: Ask questions about any part of the document
+    **🧠 Intelligent Features:**
+    - **Vector Search**: AI-powered search across your entire 100+ page document
+    - **Smart Analysis**: Finds relevant information from anywhere in the CIM
+    - **Comprehensive Coverage**: Analyzes full document, not just first few pages
+    - **Intelligent Q&A**: Ask questions about any part of the document
+    
+    **🔍 Analysis Types:**
+    - 📊 **Executive Summary**: Business model, financials, investment highlights
+    - 💰 **Financial Analysis**: Revenue, EBITDA, growth, cash flow with specific numbers
+    - ⚠️ **Risk Assessment**: Market, operational, financial, regulatory risks
+    - 💬 **Custom Q&A**: Ask anything about the investment opportunity
     
     **Get started:**
     1. Enter your OpenAI API key in the sidebar
@@ -378,7 +411,7 @@ def show_welcome_screen():
     3. Click "Process CIM" to analyze the entire document
     4. Use analysis buttons or ask specific questions
     
-    **This version analyzes your ENTIRE document, not just the beginning!**
+    **This version intelligently searches your ENTIRE document!**
     """)
 
 if __name__ == "__main__":
