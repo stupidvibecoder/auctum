@@ -11,6 +11,19 @@ st.set_page_config(
     layout="wide"
 )
 
+# Fix arrow icon CSS issue
+st.markdown("""
+<style>
+    .stApp > header {
+        background-color: transparent;
+    }
+    
+    .stApp > header [data-testid="stHeader"] {
+        display: none;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 # Initialize session state
 if 'cim_text' not in st.session_state:
     st.session_state.cim_text = None
@@ -32,24 +45,43 @@ def extract_text_from_pdf(pdf_file):
         return None
 
 def get_openai_response(prompt, context, api_key):
-    """Get response from OpenAI"""
+    """Get response from OpenAI with smart chunking for large documents"""
     try:
         client = openai.OpenAI(api_key=api_key)
         
+        # For large documents, use multiple chunks
+        if len(context) > 15000:
+            # Split into chunks and analyze multiple sections
+            chunk_size = 6000
+            chunks = [context[i:i+chunk_size] for i in range(0, len(context), chunk_size)]
+            
+            # Take first, middle, and last chunks for comprehensive coverage
+            selected_chunks = []
+            if len(chunks) >= 1:
+                selected_chunks.append(chunks[0])  # Beginning
+            if len(chunks) >= 3:
+                selected_chunks.append(chunks[len(chunks)//2])  # Middle
+            if len(chunks) >= 2:
+                selected_chunks.append(chunks[-1])  # End
+                
+            combined_context = "\n\n--- SECTION BREAK ---\n\n".join(selected_chunks)
+        else:
+            combined_context = context[:12000]  # Increased from 8000
+        
         full_prompt = f"""Based on the following CIM document content, {prompt}
 
-Document content:
-{context[:8000]}  # Limit context to avoid token limits
+Document content (from multiple sections of the document):
+{combined_context}
 
-Please provide a comprehensive answer based on the information provided."""
+Please provide a comprehensive answer based on the information provided. If you need information that might be in other parts of the document, mention that additional details may be available in the full document."""
 
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": "You are an expert financial analyst helping analyze CIM documents."},
+                {"role": "system", "content": "You are an expert financial analyst helping analyze CIM documents. You're analyzing sections from throughout the document."},
                 {"role": "user", "content": full_prompt}
             ],
-            max_tokens=1000,
+            max_tokens=1200,  # Increased for better responses
             temperature=0
         )
         
