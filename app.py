@@ -44,44 +44,93 @@ def extract_text_from_pdf(pdf_file):
         st.error(f"Error reading PDF: {e}")
         return None
 
+def search_document_sections(text, query_terms, chunk_size=3000):
+    """Search for relevant sections in the document based on query terms"""
+    # Split document into overlapping chunks
+    chunks = []
+    overlap = 500
+    
+    for i in range(0, len(text), chunk_size - overlap):
+        chunk = text[i:i + chunk_size]
+        if chunk.strip():
+            chunks.append((chunk, i))  # Store chunk and position
+    
+    # Score chunks based on query terms
+    scored_chunks = []
+    for chunk, position in chunks:
+        chunk_lower = chunk.lower()
+        score = 0
+        
+        for term in query_terms:
+            score += chunk_lower.count(term.lower())
+        
+        if score > 0:
+            scored_chunks.append((chunk, score, position))
+    
+    # Sort by score and return top chunks
+    scored_chunks.sort(key=lambda x: x[1], reverse=True)
+    return [chunk for chunk, score, pos in scored_chunks[:5]]  # Top 5 relevant chunks
+
 def get_openai_response(prompt, context, api_key):
-    """Get response from OpenAI with smart chunking for large documents"""
+    """Get response from OpenAI with smart document search"""
     try:
         client = openai.OpenAI(api_key=api_key)
         
-        # For large documents, use multiple chunks
-        if len(context) > 15000:
-            # Split into chunks and analyze multiple sections
+        # Define search terms based on the prompt
+        financial_terms = ['revenue', 'sales', 'income', 'ebitda', 'profit', 'margin', 'growth', 'financial', 'cash flow', 'valuation', 'multiple', 'earnings']
+        risk_terms = ['risk', 'challenge', 'threat', 'competition', 'regulatory', 'compliance', 'debt', 'liability', 'uncertainty']
+        summary_terms = ['overview', 'summary', 'business', 'company', 'industry', 'market', 'opportunity', 'investment', 'strategy']
+        
+        # Determine what type of analysis this is
+        prompt_lower = prompt.lower()
+        if any(term in prompt_lower for term in ['financial', 'revenue', 'ebitda', 'profit', 'metrics']):
+            search_terms = financial_terms
+        elif any(term in prompt_lower for term in ['risk', 'challenge', 'threat']):
+            search_terms = risk_terms
+        elif any(term in prompt_lower for term in ['summary', 'overview', 'business']):
+            search_terms = summary_terms
+        else:
+            # For general questions, extract key words from the prompt
+            search_terms = [word for word in prompt_lower.split() if len(word) > 3]
+        
+        # Search for relevant sections
+        relevant_sections = search_document_sections(context, search_terms)
+        
+        if relevant_sections:
+            # Use relevant sections found by search
+            combined_context = "\n\n--- RELEVANT SECTION ---\n\n".join(relevant_sections)
+            context_info = f"Analysis based on {len(relevant_sections)} relevant sections found in the document"
+        else:
+            # Fallback to previous method if no specific sections found
             chunk_size = 6000
             chunks = [context[i:i+chunk_size] for i in range(0, len(context), chunk_size)]
             
-            # Take first, middle, and last chunks for comprehensive coverage
             selected_chunks = []
             if len(chunks) >= 1:
-                selected_chunks.append(chunks[0])  # Beginning
+                selected_chunks.append(chunks[0])
             if len(chunks) >= 3:
-                selected_chunks.append(chunks[len(chunks)//2])  # Middle
+                selected_chunks.append(chunks[len(chunks)//2])
             if len(chunks) >= 2:
-                selected_chunks.append(chunks[-1])  # End
+                selected_chunks.append(chunks[-1])
                 
             combined_context = "\n\n--- SECTION BREAK ---\n\n".join(selected_chunks)
-        else:
-            combined_context = context[:12000]  # Increased from 8000
+            context_info = f"Analysis based on beginning, middle, and end sections of the document"
         
         full_prompt = f"""Based on the following CIM document content, {prompt}
 
-Document content (from multiple sections of the document):
+{context_info}:
+
 {combined_context}
 
-Please provide a comprehensive answer based on the information provided. If you need information that might be in other parts of the document, mention that additional details may be available in the full document."""
+Please provide a comprehensive answer based on the information provided. If you notice the information seems incomplete, mention that additional details may be available in other parts of the full document."""
 
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": "You are an expert financial analyst helping analyze CIM documents. You're analyzing sections from throughout the document."},
+                {"role": "system", "content": "You are an expert financial analyst helping analyze CIM documents. You're analyzing the most relevant sections found in the document."},
                 {"role": "user", "content": full_prompt}
             ],
-            max_tokens=1200,  # Increased for better responses
+            max_tokens=1500,
             temperature=0
         )
         
