@@ -1,10 +1,8 @@
 import streamlit as st
-import os
-from pathlib import Path
+import PyPDF2
+import openai
 import tempfile
-from extract import extract_text_from_cim
-from check import CIMAnalyzer
-import logging
+import os
 
 # Page config
 st.set_page_config(
@@ -14,12 +12,50 @@ st.set_page_config(
 )
 
 # Initialize session state
-if 'cim_data' not in st.session_state:
-    st.session_state.cim_data = None
-if 'analyzer' not in st.session_state:
-    st.session_state.analyzer = None
+if 'cim_text' not in st.session_state:
+    st.session_state.cim_text = None
 if 'chat_history' not in st.session_state:
     st.session_state.chat_history = []
+
+def extract_text_from_pdf(pdf_file):
+    """Extract text from PDF using PyPDF2"""
+    try:
+        pdf_reader = PyPDF2.PdfReader(pdf_file)
+        text = ""
+        for page in pdf_reader.pages:
+            page_text = page.extract_text()
+            if page_text:
+                text += page_text + "\n\n"
+        return text
+    except Exception as e:
+        st.error(f"Error reading PDF: {e}")
+        return None
+
+def get_openai_response(prompt, context, api_key):
+    """Get response from OpenAI"""
+    try:
+        client = openai.OpenAI(api_key=api_key)
+        
+        full_prompt = f"""Based on the following CIM document content, {prompt}
+
+Document content:
+{context[:8000]}  # Limit context to avoid token limits
+
+Please provide a comprehensive answer based on the information provided."""
+
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You are an expert financial analyst helping analyze CIM documents."},
+                {"role": "user", "content": full_prompt}
+            ],
+            max_tokens=1000,
+            temperature=0
+        )
+        
+        return response.choices[0].message.content
+    except Exception as e:
+        return f"Error generating response: {str(e)}"
 
 def main():
     st.title("🏢 Auctum - CIM Intelligence Platform")
@@ -37,7 +73,6 @@ def main():
         )
         
         if api_key:
-            os.environ["OPENAI_API_KEY"] = api_key
             st.success("API key configured ✅")
         else:
             st.warning("Please enter your OpenAI API key to continue")
@@ -54,10 +89,15 @@ def main():
         
         if uploaded_file and api_key:
             if st.button("🔍 Process CIM", type="primary"):
-                process_cim(uploaded_file)
+                with st.spinner("🔄 Processing CIM..."):
+                    text = extract_text_from_pdf(uploaded_file)
+                    if text:
+                        st.session_state.cim_text = text
+                        st.success(f"✅ CIM processed! Extracted {len(text):,} characters")
+                        st.rerun()
     
     # Main content area
-    if st.session_state.cim_data is None:
+    if st.session_state.cim_text is None:
         # Welcome screen
         col1, col2, col3 = st.columns([1, 2, 1])
         with col2:
@@ -78,73 +118,45 @@ def main():
             """)
     else:
         # Show CIM analysis interface
-        show_analysis_interface()
+        show_analysis_interface(api_key)
 
-def process_cim(uploaded_file):
-    """Process uploaded CIM file"""
-    with st.spinner("🔄 Processing CIM... This may take a moment."):
-        try:
-            # Save uploaded file temporarily
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
-                tmp_file.write(uploaded_file.getvalue())
-                tmp_path = tmp_file.name
-            
-            # Extract text from PDF
-            st.info("📖 Extracting text from PDF...")
-            cim_data = extract_text_from_cim(tmp_path)
-            
-            # Initialize analyzer
-            st.info("🧠 Initializing AI analyzer...")
-            analyzer = CIMAnalyzer(cim_data['chunks'])
-            
-            # Store in session state
-            st.session_state.cim_data = cim_data
-            st.session_state.analyzer = analyzer
-            
-            # Clean up temp file
-            os.unlink(tmp_path)
-            
-            st.success(f"✅ CIM processed successfully!")
-            st.info(f"📄 Loaded {cim_data['stats']['pages']} pages, {cim_data['stats']['chunks']} text chunks")
-            st.rerun()
-            
-        except Exception as e:
-            st.error(f"❌ Error processing CIM: {str(e)}")
-            logging.error(f"CIM processing error: {e}")
-
-def show_analysis_interface():
+def show_analysis_interface(api_key):
     """Show the main analysis interface after CIM is processed"""
     
-    # Summary section
-    with st.expander("📋 CIM Summary", expanded=True):
-        if st.button("📊 Generate Executive Summary"):
-            with st.spinner("Generating summary..."):
-                try:
-                    summary = st.session_state.analyzer.generate_summary()
-                    st.markdown(summary)
-                except Exception as e:
-                    st.error(f"Error generating summary: {e}")
+    st.info(f"📄 Document loaded: {len(st.session_state.cim_text):,} characters")
     
-    # Quick insights
-    col1, col2 = st.columns(2)
+    # Quick analysis buttons
+    col1, col2, col3 = st.columns(3)
     
     with col1:
-        if st.button("💰 Key Financial Metrics"):
-            with st.spinner("Extracting financial metrics..."):
-                try:
-                    metrics = st.session_state.analyzer.extract_financial_metrics()
-                    st.markdown(metrics)
-                except Exception as e:
-                    st.error(f"Error extracting metrics: {e}")
+        if st.button("📊 Generate Summary"):
+            with st.spinner("Generating summary..."):
+                summary = get_openai_response(
+                    "provide an executive summary of this CIM including company overview, business model, and key highlights.",
+                    st.session_state.cim_text,
+                    api_key
+                )
+                st.markdown(summary)
     
     with col2:
+        if st.button("💰 Financial Metrics"):
+            with st.spinner("Extracting financial metrics..."):
+                metrics = get_openai_response(
+                    "extract and summarize the key financial metrics including revenue, EBITDA, growth rates, and valuation information.",
+                    st.session_state.cim_text,
+                    api_key
+                )
+                st.markdown(metrics)
+    
+    with col3:
         if st.button("⚠️ Risk Analysis"):
             with st.spinner("Analyzing risks..."):
-                try:
-                    risks = st.session_state.analyzer.analyze_risks()
-                    st.markdown(risks)
-                except Exception as e:
-                    st.error(f"Error analyzing risks: {e}")
+                risks = get_openai_response(
+                    "identify and analyze the key risks and challenges mentioned in this document.",
+                    st.session_state.cim_text,
+                    api_key
+                )
+                st.markdown(risks)
     
     st.divider()
     
@@ -170,17 +182,11 @@ def show_analysis_interface():
         # Generate and display assistant response
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
-                try:
-                    response = st.session_state.analyzer.answer_question(prompt)
-                    st.write(response)
-                    
-                    # Update chat history with response
-                    st.session_state.chat_history[-1] = (prompt, response)
-                    
-                except Exception as e:
-                    error_msg = f"Error generating response: {e}"
-                    st.error(error_msg)
-                    st.session_state.chat_history[-1] = (prompt, error_msg)
+                response = get_openai_response(prompt, st.session_state.cim_text, api_key)
+                st.write(response)
+                
+                # Update chat history with response
+                st.session_state.chat_history[-1] = (prompt, response)
 
 if __name__ == "__main__":
     main()
