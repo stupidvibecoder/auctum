@@ -10,6 +10,7 @@ import sqlite3
 import hashlib
 from datetime import datetime, timedelta
 import base64
+import numpy as np
 
 # Optional encryption support
 try:
@@ -23,6 +24,14 @@ try:
     XLWINGS_AVAILABLE = True
 except ImportError:
     XLWINGS_AVAILABLE = False
+
+# Semantic search dependencies
+try:
+    from sentence_transformers import SentenceTransformer
+    import faiss
+    SEMANTIC_SEARCH_AVAILABLE = True
+except ImportError:
+    SEMANTIC_SEARCH_AVAILABLE = False
 
 # Page config
 st.set_page_config(
@@ -391,6 +400,17 @@ if 'ic_memo' not in st.session_state:
     st.session_state.ic_memo = {}
 if 'valuation_data' not in st.session_state:
     st.session_state.valuation_data = {}
+# Semantic search state
+if 'text_chunks' not in st.session_state:
+    st.session_state.text_chunks = []
+if 'semantic_index' not in st.session_state:
+    st.session_state.semantic_index = None
+if 'chunk_embeddings' not in st.session_state:
+    st.session_state.chunk_embeddings = None
+if 'chunk_page_mapping' not in st.session_state:
+    st.session_state.chunk_page_mapping = []
+if 'embed_model' not in st.session_state:
+    st.session_state.embed_model = None
 
 # Team members and tags for autocomplete
 TEAM_MEMBERS = ['@Alex', '@Rishi', '@Jordan', '@Sam', '@Taylor', '@Morgan']
@@ -446,6 +466,139 @@ def log_audit_action(action, details=None, document_id=None):
     conn.commit()
     conn.close()
 
+# Semantic search functions
+@st.cache_resource
+def load_embedding_model():
+    """Load and cache the embedding model"""
+    if not SEMANTIC_SEARCH_AVAILABLE:
+        return None
+    try:
+        model = SentenceTransformer('all-MiniLM-L6-v2')
+        return model
+    except Exception as e:
+        st.error(f"Error loading embedding model: {e}")
+        return None
+
+def chunk_text(text, chunk_size=1000, overlap=200):
+    """Split text into overlapping chunks for semantic search"""
+    chunks = []
+    chunk_metadata = []
+    
+    # Split by paragraphs first, then by size if needed
+    paragraphs = text.split('\n\n')
+    current_chunk = ""
+    chunk_start_pos = 0
+    
+    for para in paragraphs:
+        if len(current_chunk) + len(para) < chunk_size:
+            current_chunk += para + "\n\n"
+        else:
+            if current_chunk.strip():
+                chunks.append(current_chunk.strip())
+                chunk_metadata.append({
+                    'start_pos': chunk_start_pos,
+                    'end_pos': chunk_start_pos + len(current_chunk),
+                    'length': len(current_chunk)
+                })
+                chunk_start_pos += len(current_chunk) - overlap
+            current_chunk = para + "\n\n"
+    
+    # Add the last chunk
+    if current_chunk.strip():
+        chunks.append(current_chunk.strip())
+        chunk_metadata.append({
+            'start_pos': chunk_start_pos,
+            'end_pos': chunk_start_pos + len(current_chunk),
+            'length': len(current_chunk)
+        })
+    
+    return chunks, chunk_metadata
+
+def map_chunks_to_pages(chunks, pdf_reader):
+    """Map text chunks to PDF page numbers"""
+    page_mapping = []
+    page_texts = []
+    
+    # Extract text from each page
+    for page in pdf_reader.pages:
+        page_text = page.extract_text() or ""
+        page_texts.append(page_text)
+    
+    # Map each chunk to most likely page
+    for chunk in chunks:
+        best_page = 1
+        best_overlap = 0
+        
+        # Take first 200 chars of chunk for matching
+        chunk_sample = chunk[:200].replace('\n', ' ').strip()
+        
+        for page_num, page_text in enumerate(page_texts):
+            page_clean = page_text.replace('\n', ' ').strip()
+            
+            # Find longest common substring
+            overlap = 0
+            for i in range(len(chunk_sample)):
+                for j in range(i + 1, len(chunk_sample) + 1):
+                    substr = chunk_sample[i:j]
+                    if len(substr) > 10 and substr in page_clean:
+                        overlap = max(overlap, len(substr))
+            
+            if overlap > best_overlap:
+                best_overlap = overlap
+                best_page = page_num + 1
+        
+        page_mapping.append(best_page)
+    
+    return page_mapping
+
+def create_semantic_index(chunks):
+    """Create FAISS index for semantic search"""
+    if not SEMANTIC_SEARCH_AVAILABLE or not st.session_state.embed_model:
+        return None, None
+    
+    try:
+        # Generate embeddings
+        with st.spinner("🧠 Creating semantic search index..."):
+            embeddings = st.session_state.embed_model.encode(chunks, show_progress_bar=False)
+        
+        # Create FAISS index
+        dim = embeddings[0].shape[0]
+        index = faiss.IndexFlatL2(dim)
+        index.add(np.array(embeddings))
+        
+        return index, embeddings
+    except Exception as e:
+        st.error(f"Error creating semantic index: {e}")
+        return None, None
+
+def semantic_search(query, chunks, index, top_k=5):
+    """Perform semantic search on chunks"""
+    if not SEMANTIC_SEARCH_AVAILABLE or not st.session_state.embed_model or index is None:
+        return []
+    
+    try:
+        # Encode query
+        query_embedding = st.session_state.embed_model.encode([query])
+        
+        # Search
+        distances, indices = index.search(np.array(query_embedding), min(top_k, len(chunks)))
+        
+        # Return results with scores
+        results = []
+        for i, (distance, idx) in enumerate(zip(distances[0], indices[0])):
+            if idx < len(chunks):
+                similarity_score = 1 / (1 + distance)  # Convert distance to similarity
+                results.append({
+                    'chunk': chunks[idx],
+                    'index': idx,
+                    'similarity': similarity_score,
+                    'page': st.session_state.chunk_page_mapping[idx] if idx < len(st.session_state.chunk_page_mapping) else 1
+                })
+        
+        return results
+    except Exception as e:
+        st.error(f"Error in semantic search: {e}")
+        return []
 # PDF extraction and processing functions
 def extract_text_from_pdf(pdf_file):
     """Extract text from PDF using PyPDF2"""
@@ -456,10 +609,10 @@ def extract_text_from_pdf(pdf_file):
             page_text = page.extract_text()
             if page_text:
                 text += page_text + "\n\n"
-        return text
+        return text, pdf_reader
     except Exception as e:
         st.error(f"Error reading PDF: {e}")
-        return None
+        return None, None
 
 def extract_section_headers(text):
     """Extract section headers from CIM text"""
@@ -785,7 +938,7 @@ def main():
         if uploaded_file and api_key:
             if st.button("🔍 Process CIM", type="primary"):
                 with st.spinner("🔄 Processing CIM..."):
-                    text = extract_text_from_pdf(uploaded_file)
+                    text, pdf_reader = extract_text_from_pdf(uploaded_file)
                     if text:
                         # Save to database
                         cim_id = save_cim_to_database(uploaded_file.name, text, st.session_state.current_user)
@@ -797,6 +950,24 @@ def main():
                         sections = split_text_by_sections(text, headers)
                         st.session_state.cim_sections = sections
                         
+                        # Create semantic search index
+                        if SEMANTIC_SEARCH_AVAILABLE:
+                            if st.session_state.embed_model is None:
+                                st.session_state.embed_model = load_embedding_model()
+                            
+                            if st.session_state.embed_model:
+                                chunks, chunk_metadata = chunk_text(text)
+                                st.session_state.text_chunks = chunks
+                                
+                                # Map chunks to pages
+                                page_mapping = map_chunks_to_pages(chunks, pdf_reader)
+                                st.session_state.chunk_page_mapping = page_mapping
+                                
+                                # Create semantic index
+                                index, embeddings = create_semantic_index(chunks)
+                                st.session_state.semantic_index = index
+                                st.session_state.chunk_embeddings = embeddings
+                        
                         # Detect red flags
                         red_flags = detect_red_flags(text, api_key)
                         st.session_state.red_flags = red_flags
@@ -805,7 +976,8 @@ def main():
                         valuation_data = extract_valuation_metrics(text, api_key)
                         st.session_state.valuation_data = valuation_data
                         
-                        st.success(f"✅ CIM processed! Extracted {len(text):,} characters, {len(sections)} sections, {len(red_flags)} red flags detected")
+                        semantic_status = "✅ Enabled" if SEMANTIC_SEARCH_AVAILABLE and st.session_state.semantic_index else "❌ Unavailable"
+                        st.success(f"✅ CIM processed! Extracted {len(text):,} characters, {len(sections)} sections, {len(red_flags)} red flags detected | Semantic Search: {semantic_status}")
                         st.rerun()
         
         # Data room integration
@@ -871,7 +1043,8 @@ def show_analysis_interface(api_key):
     
     # Create tabs for all features
     st.markdown('<div class="sticky-tabs">', unsafe_allow_html=True)
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+        "🔍 Semantic Search",
         "🧑‍💼 Deal Workspace", 
         "📋 IC Memo", 
         "🚨 Red Flags", 
@@ -883,25 +1056,197 @@ def show_analysis_interface(api_key):
     st.markdown('</div>', unsafe_allow_html=True)
     
     with tab1:
-        show_deal_workspace(api_key)
+        show_semantic_search()
     
     with tab2:
-        show_ic_memo_generator(api_key)
+        show_deal_workspace(api_key)
     
     with tab3:
-        show_red_flag_tracker(api_key)
+        show_ic_memo_generator(api_key)
     
     with tab4:
-        show_valuation_snapshot(api_key)
+        show_red_flag_tracker(api_key)
     
     with tab5:
-        show_data_room_integration()
+        show_valuation_snapshot(api_key)
     
     with tab6:
-        show_quick_analysis(api_key)
+        show_data_room_integration()
     
     with tab7:
+        show_quick_analysis(api_key)
+    
+    with tab8:
         show_chat_interface(api_key)
+
+def show_semantic_search():
+    """Semantic Search interface with PDF viewer integration"""
+    st.subheader("🔍 Semantic Search")
+    st.caption("Natural language search through your CIM document")
+    
+    # Check if semantic search is available
+    if not SEMANTIC_SEARCH_AVAILABLE:
+        st.error("❌ Semantic search requires additional packages. Install with: `pip install sentence-transformers faiss-cpu`")
+        return
+    
+    if st.session_state.semantic_index is None:
+        st.warning("⚠️ Semantic search index not created. Please reprocess your CIM document.")
+        return
+    
+    # Search interface
+    st.markdown("### 🔍 Search Your Document")
+    
+    # Search input with examples
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        search_query = st.text_input(
+            "Ask a question or search for content:",
+            placeholder="e.g., What are the main revenue streams? What risks does the company face?"
+        )
+    
+    with col2:
+        search_button = st.button("🔍 Search", type="primary", use_container_width=True)
+    
+    # Quick search examples
+    st.markdown("**Quick Examples:**")
+    example_col1, example_col2, example_col3 = st.columns(3)
+    
+    with example_col1:
+        if st.button("💰 Revenue Model", use_container_width=True):
+            search_query = "revenue model business model how company makes money"
+            search_button = True
+    
+    with example_col2:
+        if st.button("📊 Financial Performance", use_container_width=True):
+            search_query = "financial performance EBITDA revenue growth metrics"
+            search_button = True
+    
+    with example_col3:
+        if st.button("⚠️ Risk Factors", use_container_width=True):
+            search_query = "risks challenges threats competition regulatory"
+            search_button = True
+    
+    # Perform search
+    if (search_query and search_button) or (search_query and st.session_state.get('last_search') != search_query):
+        st.session_state.last_search = search_query
+        
+        with st.spinner("🔍 Searching through document..."):
+            results = semantic_search(search_query, st.session_state.text_chunks, st.session_state.semantic_index, top_k=8)
+        
+        if results:
+            st.markdown(f"### 📋 Search Results for: *\"{search_query}\"*")
+            st.caption(f"Found {len(results)} relevant sections")
+            
+            # Display results
+            for i, result in enumerate(results):
+                similarity_percentage = result['similarity'] * 100
+                
+                # Result card with enhanced styling
+                result_html = f"""
+                <div style="background: rgba(30, 41, 59, 0.8); border-radius: 12px; padding: 1.5rem; margin: 1rem 0; border-left: 4px solid #6366f1;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                        <strong>📄 Result #{i+1}</strong>
+                        <div style="display: flex; gap: 1rem; font-size: 0.8rem; opacity: 0.8;">
+                            <span>📊 Match: {similarity_percentage:.1f}%</span>
+                            <span>📖 Page: {result['page']}</span>
+                        </div>
+                    </div>
+                </div>
+                """
+                st.markdown(result_html, unsafe_allow_html=True)
+                
+                # Content preview
+                chunk_text = result['chunk']
+                if len(chunk_text) > 800:
+                    preview_text = chunk_text[:800] + "..."
+                    with st.expander(f"📖 Preview (Page {result['page']})", expanded=i==0):
+                        st.write(chunk_text[:800] + "...")
+                        if st.button(f"📄 Show Full Content", key=f"show_full_{i}"):
+                            st.text_area("Full Content:", chunk_text, height=200, key=f"full_content_{i}")
+                else:
+                    with st.expander(f"📖 Content (Page {result['page']})", expanded=i==0):
+                        st.write(chunk_text)
+                
+                # Action buttons
+                action_col1, action_col2, action_col3 = st.columns(3)
+                
+                with action_col1:
+                    if st.button(f"📋 Add to IC Memo", key=f"add_memo_{i}"):
+                        # Auto-detect best IC memo section
+                        if "revenue" in search_query.lower() or "financial" in search_query.lower():
+                            section = "Financial Analysis"
+                        elif "risk" in search_query.lower():
+                            section = "Risk Analysis"
+                        elif "market" in search_query.lower():
+                            section = "Market Analysis"
+                        else:
+                            section = "Executive Summary"
+                        
+                        current_content = st.session_state.ic_memo.get(section, "")
+                        new_content = current_content + f"\n\n**From Document (Page {result['page']}):**\n{chunk_text[:300]}..."
+                        st.session_state.ic_memo[section] = new_content
+                        st.success(f"✅ Added to {section} section of IC Memo")
+                
+                with action_col2:
+                    if st.button(f"🚨 Flag as Risk", key=f"flag_risk_{i}"):
+                        new_flag = {
+                            'description': f"Review needed: {chunk_text[:100]}...",
+                            'severity': 'medium',
+                            'page_ref': f'Page {result["page"]}',
+                            'status': 'open',
+                            'source': 'semantic_search'
+                        }
+                        st.session_state.red_flags.append(new_flag)
+                        st.success("🚨 Added to Red Flag Tracker")
+                
+                with action_col3:
+                    if st.button(f"💬 Ask Follow-up", key=f"followup_{i}"):
+                        # Add to chat with context
+                        context_query = f"Based on this content from page {result['page']}: {chunk_text[:200]}... Please provide more details about: {search_query}"
+                        st.session_state.chat_history.append((context_query, ""))
+                        st.info("💬 Added to chat - switch to Chat tab to see AI response")
+        
+        else:
+            st.info("🔍 No relevant sections found. Try different search terms or check if the document was processed correctly.")
+    
+    # Search statistics
+    if st.session_state.text_chunks:
+        st.divider()
+        st.markdown("### 📊 Document Statistics")
+        
+        stat_col1, stat_col2, stat_col3, stat_col4 = st.columns(4)
+        
+        stat_col1.metric("📄 Total Pages", len(set(st.session_state.chunk_page_mapping)))
+        stat_col2.metric("🧩 Text Chunks", len(st.session_state.text_chunks))
+        stat_col3.metric("📝 Total Words", len(st.session_state.cim_text.split()))
+        stat_col4.metric("🔍 Search Ready", "✅ Yes" if st.session_state.semantic_index else "❌ No")
+        
+        # Advanced search options
+        with st.expander("🔧 Advanced Search Options"):
+            col_adv1, col_adv2 = st.columns(2)
+            
+            with col_adv1:
+                st.markdown("**Search Tips:**")
+                st.write("• Use natural language questions")
+                st.write("• Combine related terms for better results")  
+                st.write("• Search finds semantically similar content")
+                st.write("• Results ranked by relevance")
+            
+            with col_adv2:
+                st.markdown("**Sample Searches:**")
+                st.code("management team experience background")
+                st.code("competitive advantages moat differentiation")
+                st.code("customer acquisition cost lifetime value")
+                st.code("regulatory risks compliance issues")
+        
+        # Chunk browser for debugging/exploration
+        if st.checkbox("🔍 Browse Document Chunks"):
+            st.markdown("**Document Chunks Browser:**")
+            chunk_to_show = st.selectbox("Select chunk to view:", range(len(st.session_state.text_chunks)), format_func=lambda x: f"Chunk {x+1} (Page {st.session_state.chunk_page_mapping[x]})")
+            
+            if chunk_to_show is not None:
+                st.markdown(f"**Chunk {chunk_to_show + 1} - Page {st.session_state.chunk_page_mapping[chunk_to_show]}:**")
+                st.text_area("Content:", st.session_state.text_chunks[chunk_to_show], height=200, key="chunk_browser")
 
 def show_deal_workspace(api_key):
     """Enhanced deal team workspace"""
