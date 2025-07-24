@@ -7,6 +7,11 @@ import json
 import re
 import pandas as pd
 from datetime import datetime
+try:
+    import xlwings as xw
+    XLWINGS_AVAILABLE = True
+except ImportError:
+    XLWINGS_AVAILABLE = False
 
 # Page config
 st.set_page_config(
@@ -478,6 +483,202 @@ def export_workspace_data():
     
     return pd.DataFrame(export_data)
 
+def export_workspace_to_excel():
+    """Export deal workspace to Excel using xlwings"""
+    if not XLWINGS_AVAILABLE:
+        st.error("❌ xlwings not available. Please install: pip install xlwings")
+        return False
+    
+    try:
+        # Prepare data for export
+        comments_data = []
+        tasks_data = []
+        memos_data = []
+        summaries_data = []
+        
+        # Process comments and tasks
+        for section, comments in st.session_state.comment_store.items():
+            for comment in comments:
+                row = [
+                    comment.get('user', ''),
+                    section,
+                    comment.get('comment', ''),
+                    comment.get('priority', ''),
+                    comment.get('status', ''),
+                    ', '.join(comment.get('assigned_to', [])),
+                    ', '.join([tag for tag in comment.get('tags', []) if tag.startswith('#')]),
+                    comment.get('timestamp', '')
+                ]
+                
+                if comment.get('assigned_to') or comment.get('status') in ['Open', 'In Progress']:
+                    tasks_data.append(row)
+                else:
+                    comments_data.append(row)
+        
+        # Process memos
+        for section, memo in st.session_state.memo_store.items():
+            memos_data.append([
+                section,
+                memo.get('filename', ''),
+                memo.get('type', ''),
+                f"{memo.get('size', 0)} bytes" if memo.get('size') else '',
+                memo.get('timestamp', '')
+            ])
+        
+        # Process summaries
+        for section, summary in st.session_state.section_summaries.items():
+            summaries_data.append([section, summary])
+        
+        # Create Excel workbook
+        try:
+            wb = xw.Book()  # Opens new Excel workbook
+        except Exception as e:
+            st.error(f"❌ Could not open Excel. Make sure Excel is installed. Error: {e}")
+            return False
+        
+        # Set workbook name
+        wb.name = "Auctum_Deal_Workspace"
+        
+        # Create and populate Comments sheet
+        if len(wb.sheets) > 0:
+            comments_sheet = wb.sheets[0]
+            comments_sheet.name = "Comments"
+        else:
+            comments_sheet = wb.sheets.add("Comments")
+        
+        # Comments header and data
+        comments_sheet.range("A1").value = "DEAL WORKSPACE - COMMENTS"
+        comments_sheet.range("A1").api.Font.Bold = True
+        comments_sheet.range("A1").api.Font.Size = 14
+        
+        header = ["Author", "Section", "Content", "Priority", "Status", "Assigned To", "Tags", "Timestamp"]
+        comments_sheet.range("A3").value = header
+        comments_sheet.range("A3:H3").api.Font.Bold = True
+        comments_sheet.range("A3:H3").color = (200, 200, 200)
+        
+        if comments_data:
+            comments_sheet.range("A4").value = comments_data
+        
+        # Auto-fit columns
+        comments_sheet.autofit()
+        
+        # Create Tasks sheet
+        tasks_sheet = wb.sheets.add("Tasks")
+        tasks_sheet.range("A1").value = "DEAL WORKSPACE - TASKS"
+        tasks_sheet.range("A1").api.Font.Bold = True
+        tasks_sheet.range("A1").api.Font.Size = 14
+        
+        tasks_sheet.range("A3").value = header
+        tasks_sheet.range("A3:H3").api.Font.Bold = True
+        tasks_sheet.range("A3:H3").color = (255, 200, 200)
+        
+        if tasks_data:
+            tasks_sheet.range("A4").value = tasks_data
+        
+        tasks_sheet.autofit()
+        
+        # Create Memos sheet
+        memos_sheet = wb.sheets.add("Memos")
+        memos_sheet.range("A1").value = "DEAL WORKSPACE - MEMOS"
+        memos_sheet.range("A1").api.Font.Bold = True
+        memos_sheet.range("A1").api.Font.Size = 14
+        
+        memo_header = ["Section", "Filename", "Type", "Size", "Upload Date"]
+        memos_sheet.range("A3").value = memo_header
+        memos_sheet.range("A3:E3").api.Font.Bold = True
+        memos_sheet.range("A3:E3").color = (200, 255, 200)
+        
+        if memos_data:
+            memos_sheet.range("A4").value = memos_data
+        
+        memos_sheet.autofit()
+        
+        # Create Summaries sheet
+        summaries_sheet = wb.sheets.add("AI_Summaries")
+        summaries_sheet.range("A1").value = "DEAL WORKSPACE - AI SUMMARIES"
+        summaries_sheet.range("A1").api.Font.Bold = True
+        summaries_sheet.range("A1").api.Font.Size = 14
+        
+        summary_header = ["Section", "AI Summary"]
+        summaries_sheet.range("A3").value = summary_header
+        summaries_sheet.range("A3:B3").api.Font.Bold = True
+        summaries_sheet.range("A3:B3").color = (200, 200, 255)
+        
+        if summaries_data:
+            summaries_sheet.range("A4").value = summaries_data
+            # Set text wrap for summary column
+            summaries_sheet.range("B:B").api.WrapText = True
+        
+        summaries_sheet.autofit()
+        
+        # Create Overview sheet
+        overview_sheet = wb.sheets.add("Overview", before=comments_sheet)
+        overview_sheet.range("A1").value = "AUCTUM DEAL WORKSPACE OVERVIEW"
+        overview_sheet.range("A1").api.Font.Bold = True
+        overview_sheet.range("A1").api.Font.Size = 16
+        
+        # Add summary statistics
+        total_sections = len(st.session_state.cim_sections)
+        total_comments = len(comments_data)
+        total_tasks = len(tasks_data)
+        total_memos = len(memos_data)
+        total_summaries = len(summaries_data)
+        
+        overview_data = [
+            ["Export Date:", datetime.now().strftime("%B %d, %Y %H:%M")],
+            ["Total Sections:", total_sections],
+            ["Total Comments:", total_comments],
+            ["Total Tasks:", total_tasks],
+            ["Total Memos:", total_memos],
+            ["AI Summaries:", total_summaries],
+            [""],
+            ["Sheet Descriptions:"],
+            ["• Comments: General discussion and notes"],
+            ["• Tasks: Assigned action items and their status"],
+            ["• Memos: Uploaded documents and files"],
+            ["• AI_Summaries: AI-generated section summaries"]
+        ]
+        
+        overview_sheet.range("A3").value = overview_data
+        overview_sheet.range("A3:A8").api.Font.Bold = True
+        overview_sheet.autofit()
+        
+        # Add audit log information if available
+        if st.session_state.audit_log:
+            audit_sheet = wb.sheets.add("Audit_Log")
+            audit_sheet.range("A1").value = "AUDIT LOG"
+            audit_sheet.range("A1").api.Font.Bold = True
+            audit_sheet.range("A1").api.Font.Size = 14
+            
+            audit_header = ["User", "Action", "Section", "Details", "Timestamp"]
+            audit_sheet.range("A3").value = audit_header
+            audit_sheet.range("A3:E3").api.Font.Bold = True
+            audit_sheet.range("A3:E3").color = (255, 255, 200)
+            
+            audit_data = []
+            for log_entry in st.session_state.audit_log:
+                audit_data.append([
+                    log_entry.get('user', ''),
+                    log_entry.get('action', ''),
+                    log_entry.get('section', ''),
+                    log_entry.get('details', ''),
+                    log_entry.get('timestamp', '')
+                ])
+            
+            if audit_data:
+                audit_sheet.range("A4").value = audit_data
+            
+            audit_sheet.autofit()
+        
+        # Log the export action
+        add_audit_log("System", "Exported workspace to Excel", details=f"Exported {total_comments + total_tasks} items")
+        
+        return True
+        
+    except Exception as e:
+        st.error(f"❌ Error exporting to Excel: {str(e)}")
+        return False
+
 def search_document_sections(text, query_terms, chunk_size=3000):
     """Search for relevant sections in the document based on query terms"""
     chunks = []
@@ -777,9 +978,10 @@ def show_deal_workspace(api_key):
         return
     
     # Export functionality
-    col_export1, col_export2 = st.columns([3, 1])
+    col_export1, col_export2, col_export3 = st.columns([2, 1, 1])
+    
     with col_export2:
-        if st.button("📊 Export Summary"):
+        if st.button("📊 Export CSV"):
             try:
                 df = export_workspace_data()
                 if not df.empty:
@@ -794,7 +996,20 @@ def show_deal_workspace(api_key):
                 else:
                     st.info("No data to export yet.")
             except Exception as e:
-                st.error(f"Export failed: {e}")
+                st.error(f"CSV export failed: {e}")
+    
+    with col_export3:
+        if XLWINGS_AVAILABLE:
+            if st.button("📤 Export Excel"):
+                with st.spinner("🔄 Exporting to Excel..."):
+                    success = export_workspace_to_excel()
+                    if success:
+                        st.success("✅ Successfully exported to Excel!")
+                        st.balloons()
+                    else:
+                        st.error("❌ Excel export failed")
+        else:
+            st.button("📤 Excel (Install xlwings)", disabled=True, help="Run: pip install xlwings")
     
     # Section selector
     col1, col2 = st.columns([1, 2])
