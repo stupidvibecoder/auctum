@@ -3,6 +3,9 @@ import PyPDF2
 import openai
 import tempfile
 import os
+import json
+import re
+from datetime import datetime
 
 # Page config
 st.set_page_config(
@@ -204,6 +207,14 @@ if 'cim_text' not in st.session_state:
     st.session_state.cim_text = None
 if 'chat_history' not in st.session_state:
     st.session_state.chat_history = []
+if 'cim_sections' not in st.session_state:
+    st.session_state.cim_sections = {}
+if 'comment_store' not in st.session_state:
+    st.session_state.comment_store = {}
+if 'memo_store' not in st.session_state:
+    st.session_state.memo_store = {}
+if 'workspace_data' not in st.session_state:
+    st.session_state.workspace_data = load_workspace_data()
 
 def extract_text_from_pdf(pdf_file):
     """Extract text from PDF using PyPDF2"""
@@ -218,6 +229,89 @@ def extract_text_from_pdf(pdf_file):
     except Exception as e:
         st.error(f"Error reading PDF: {e}")
         return None
+
+def extract_section_headers(text):
+    """Extract section headers from CIM text"""
+    # Pattern for numbered sections like "1.0 Executive Summary" or "2. Financial Overview"
+    patterns = [
+        r"(\d+\.?\d*\s+[A-Z][a-zA-Z\s&]+)(?=\n|\r)",  # Numbered sections
+        r"([A-Z][A-Z\s&]{10,}?)(?=\n|\r)",  # All caps headers
+        r"^([A-Z][a-zA-Z\s&]{5,}?)(?=\n)",  # Title case headers at line start
+    ]
+    
+    headers = []
+    for pattern in patterns:
+        matches = re.findall(pattern, text, re.MULTILINE)
+        headers.extend([match.strip() for match in matches if len(match.strip()) > 5])
+    
+    # Clean and deduplicate
+    headers = list(dict.fromkeys(headers))  # Remove duplicates while preserving order
+    
+    # Common CIM sections if no headers found
+    if not headers:
+        headers = [
+            "Executive Summary", 
+            "Business Overview", 
+            "Financial Performance", 
+            "Market Analysis", 
+            "Management Team", 
+            "Investment Highlights",
+            "Risk Factors",
+            "Transaction Overview"
+        ]
+    
+    return headers[:15]  # Limit to first 15 sections
+
+def split_text_by_sections(text, headers):
+    """Split text into sections based on headers"""
+    sections = {}
+    text_lower = text.lower()
+    
+    for i, header in enumerate(headers):
+        header_lower = header.lower()
+        start_pos = text_lower.find(header_lower)
+        
+        if start_pos != -1:
+            # Find the end position (start of next header or end of text)
+            if i + 1 < len(headers):
+                next_header = headers[i + 1].lower()
+                end_pos = text_lower.find(next_header, start_pos + len(header_lower))
+                if end_pos == -1:
+                    end_pos = len(text)
+            else:
+                end_pos = len(text)
+            
+            section_text = text[start_pos:end_pos].strip()
+            sections[header] = section_text
+        else:
+            # If header not found, create empty section
+            sections[header] = ""
+    
+    return sections
+
+def load_workspace_data():
+    """Load workspace data from JSON file"""
+    try:
+        if os.path.exists("workspace.json"):
+            with open("workspace.json", "r") as f:
+                data = json.load(f)
+                return data.get("comments", {}), data.get("memos", {})
+    except:
+        pass
+    return {}, {}
+
+def save_workspace_data(comment_store, memo_store):
+    """Save workspace data to JSON file"""
+    try:
+        data = {
+            "comments": comment_store,
+            "memos": memo_store,
+            "timestamp": datetime.now().isoformat()
+        }
+        with open("workspace.json", "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        st.error(f"Error saving workspace data: {e}")
 
 def search_document_sections(text, query_terms, chunk_size=3000):
     """Search for relevant sections in the document based on query terms"""
@@ -348,7 +442,18 @@ def main():
                     text = extract_text_from_pdf(uploaded_file)
                     if text:
                         st.session_state.cim_text = text
-                        st.success(f"✅ CIM processed! Extracted {len(text):,} characters")
+                        
+                        # Extract sections for workspace
+                        headers = extract_section_headers(text)
+                        sections = split_text_by_sections(text, headers)
+                        st.session_state.cim_sections = sections
+                        
+                        # Load existing workspace data
+                        comment_store, memo_store = load_workspace_data()
+                        st.session_state.comment_store = comment_store
+                        st.session_state.memo_store = memo_store
+                        
+                        st.success(f"✅ CIM processed! Extracted {len(text):,} characters and {len(sections)} sections")
                         st.rerun()
     
     # Main content area
@@ -380,15 +485,31 @@ def main():
                 st.write("3. Click 'Process CIM' to analyze")
                 st.write("4. Start asking questions and generating insights!")
     else:
-        # Show CIM analysis interface
+        # Show analysis interface with tabs
         show_analysis_interface(api_key)
 
 def show_analysis_interface(api_key):
-    """Show the main analysis interface after CIM is processed"""
+    """Show the main analysis interface with tabs"""
     
     st.info(f"📄 **Document Loaded**: {len(st.session_state.cim_text):,} characters extracted and ready for analysis")
     
-    # Quick analysis buttons
+    # Create tabs for different features
+    tab1, tab2, tab3, tab4 = st.tabs(["🎯 Quick Analysis", "💬 Interactive Chat", "🧑‍💼 Deal Workspace", "📊 Sections"])
+    
+    with tab1:
+        show_quick_analysis(api_key)
+    
+    with tab2:
+        show_chat_interface(api_key)
+    
+    with tab3:
+        show_deal_workspace()
+    
+    with tab4:
+        show_sections_overview()
+
+def show_quick_analysis(api_key):
+    """Show quick analysis buttons"""
     st.subheader("🎯 Quick Analysis")
     col1, col2, col3 = st.columns(3)
     
@@ -424,10 +545,9 @@ def show_analysis_interface(api_key):
                 )
                 st.markdown("### ⚠️ Risk Analysis")
                 st.markdown(risks)
-    
-    st.divider()
-    
-    # Chat interface
+
+def show_chat_interface(api_key):
+    """Show interactive chat interface"""
     st.subheader("💬 Interactive Analysis")
     st.caption("Ask specific questions about this CIM document")
     
@@ -455,6 +575,217 @@ def show_analysis_interface(api_key):
                 
                 # Update chat history with response
                 st.session_state.chat_history[-1] = (prompt, response)
+
+def show_deal_workspace():
+    """Show deal team workspace for collaboration"""
+    st.subheader("🧑‍💼 Deal Team Workspace")
+    st.caption("Collaborate with your team on this deal")
+    
+    if not st.session_state.cim_sections:
+        st.warning("⚠️ No sections found. Please reprocess the CIM to enable workspace features.")
+        return
+    
+    # Section selector
+    col1, col2 = st.columns([1, 2])
+    
+    with col1:
+        st.markdown("### 📂 Sections")
+        selected_section = st.selectbox(
+            "Select a section to work on:",
+            list(st.session_state.cim_sections.keys()),
+            key="workspace_section"
+        )
+        
+        # Show section stats
+        if selected_section:
+            comments_count = len(st.session_state.comment_store.get(selected_section, []))
+            has_memo = selected_section in st.session_state.memo_store
+            
+            st.metric("Comments", comments_count)
+            st.metric("Memo Attached", "Yes" if has_memo else "No")
+    
+    with col2:
+        if selected_section:
+            st.markdown(f"### 📋 Working on: {selected_section}")
+            
+            # Memo upload
+            st.markdown("#### 📎 Attach Memo")
+            uploaded_memo = st.file_uploader(
+                "Upload a memo or note for this section",
+                type=["txt", "md", "pdf"],
+                key=f"memo_{selected_section}"
+            )
+            
+            if uploaded_memo:
+                if uploaded_memo.type == "text/plain":
+                    memo_content = uploaded_memo.read().decode("utf-8")
+                else:
+                    memo_content = f"Uploaded file: {uploaded_memo.name}"
+                
+                st.session_state.memo_store[selected_section] = {
+                    "content": memo_content,
+                    "filename": uploaded_memo.name,
+                    "timestamp": datetime.now().isoformat()
+                }
+                save_workspace_data(st.session_state.comment_store, st.session_state.memo_store)
+                st.success(f"✅ Memo attached to {selected_section}")
+            
+            # Show existing memo
+            if selected_section in st.session_state.memo_store:
+                memo = st.session_state.memo_store[selected_section]
+                with st.expander(f"📎 Attached Memo: {memo['filename']}"):
+                    st.write(memo['content'])
+                    if st.button("🗑️ Remove Memo", key=f"remove_memo_{selected_section}"):
+                        del st.session_state.memo_store[selected_section]
+                        save_workspace_data(st.session_state.comment_store, st.session_state.memo_store)
+                        st.rerun()
+            
+            st.divider()
+            
+            # Comments and tasks
+            st.markdown("#### 💬 Comments & Tasks")
+            
+            # Add new comment
+            with st.form(f"comment_form_{selected_section}"):
+                col_a, col_b = st.columns([2, 1])
+                with col_a:
+                    user_name = st.text_input("Your name", placeholder="Enter your name")
+                    comment_text = st.text_area("Comment or task", placeholder="Add a comment or create a task...")
+                with col_b:
+                    tags = st.text_input("Tags", placeholder="@user #tag")
+                    priority = st.selectbox("Priority", ["Low", "Medium", "High", "Critical"])
+                
+                submitted = st.form_submit_button("💬 Add Comment")
+                
+                if submitted and user_name and comment_text:
+                    new_comment = {
+                        "id": len(st.session_state.comment_store.get(selected_section, [])),
+                        "user": user_name,
+                        "comment": comment_text,
+                        "tags": tags.split() if tags else [],
+                        "priority": priority,
+                        "status": "Open",
+                        "timestamp": datetime.now().isoformat()
+                    }
+                    
+                    if selected_section not in st.session_state.comment_store:
+                        st.session_state.comment_store[selected_section] = []
+                    
+                    st.session_state.comment_store[selected_section].append(new_comment)
+                    save_workspace_data(st.session_state.comment_store, st.session_state.memo_store)
+                    st.success("✅ Comment added!")
+                    st.rerun()
+            
+            # Display existing comments
+            if selected_section in st.session_state.comment_store:
+                comments = st.session_state.comment_store[selected_section]
+                
+                if comments:
+                    st.markdown("#### 📝 Comments")
+                    
+                    # Filter options
+                    col_x, col_y = st.columns(2)
+                    with col_x:
+                        show_resolved = st.checkbox("Show resolved tasks", value=True)
+                    with col_y:
+                        filter_priority = st.selectbox("Filter by priority", ["All", "Critical", "High", "Medium", "Low"])
+                    
+                    for i, comment in enumerate(comments):
+                        # Apply filters
+                        if not show_resolved and comment['status'] == "Resolved":
+                            continue
+                        if filter_priority != "All" and comment['priority'] != filter_priority:
+                            continue
+                        
+                        # Comment display
+                        status_color = "🟢" if comment['status'] == "Resolved" else "🔴"
+                        priority_emoji = {"Critical": "🚨", "High": "⚠️", "Medium": "📋", "Low": "📝"}
+                        
+                        with st.container():
+                            col1, col2, col3 = st.columns([3, 1, 1])
+                            
+                            with col1:
+                                st.markdown(f"**{comment['user']}** {priority_emoji.get(comment['priority'], '📝')}")
+                                st.write(comment['comment'])
+                                if comment['tags']:
+                                    st.caption(f"Tags: {' '.join(comment['tags'])}")
+                            
+                            with col2:
+                                st.caption(f"Status: {status_color} {comment['status']}")
+                                st.caption(f"Priority: {comment['priority']}")
+                            
+                            with col3:
+                                if comment['status'] == "Open":
+                                    if st.button("✅ Resolve", key=f"resolve_{selected_section}_{i}"):
+                                        st.session_state.comment_store[selected_section][i]['status'] = "Resolved"
+                                        save_workspace_data(st.session_state.comment_store, st.session_state.memo_store)
+                                        st.rerun()
+                                else:
+                                    if st.button("↩️ Reopen", key=f"reopen_{selected_section}_{i}"):
+                                        st.session_state.comment_store[selected_section][i]['status'] = "Open"
+                                        save_workspace_data(st.session_state.comment_store, st.session_state.memo_store)
+                                        st.rerun()
+                            
+                            st.divider()
+                else:
+                    st.info("💭 No comments yet. Add the first comment above!")
+
+def show_sections_overview():
+    """Show overview of all sections"""
+    st.subheader("📊 Document Sections Overview")
+    
+    if not st.session_state.cim_sections:
+        st.warning("⚠️ No sections found. Please reprocess the CIM.")
+        return
+    
+    # Stats overview
+    col1, col2, col3, col4 = st.columns(4)
+    
+    total_sections = len(st.session_state.cim_sections)
+    total_comments = sum(len(comments) for comments in st.session_state.comment_store.values())
+    total_memos = len(st.session_state.memo_store)
+    open_tasks = sum(
+        len([c for c in comments if c['status'] == 'Open']) 
+        for comments in st.session_state.comment_store.values()
+    )
+    
+    col1.metric("Sections", total_sections)
+    col2.metric("Total Comments", total_comments)
+    col3.metric("Memos Attached", total_memos)
+    col4.metric("Open Tasks", open_tasks)
+    
+    st.divider()
+    
+    # Sections list with activity
+    for section_name in st.session_state.cim_sections.keys():
+        with st.expander(f"📄 {section_name}"):
+            comments = st.session_state.comment_store.get(section_name, [])
+            memo = st.session_state.memo_store.get(section_name)
+            
+            col_a, col_b, col_c = st.columns(3)
+            
+            with col_a:
+                st.write(f"**Comments:** {len(comments)}")
+                open_comments = len([c for c in comments if c['status'] == 'Open'])
+                if open_comments > 0:
+                    st.write(f"🔴 Open tasks: {open_comments}")
+            
+            with col_b:
+                st.write(f"**Memo:** {'✅ Attached' if memo else '❌ None'}")
+            
+            with col_c:
+                if comments:
+                    high_priority = len([c for c in comments if c['priority'] in ['High', 'Critical']])
+                    if high_priority > 0:
+                        st.write(f"⚠️ High priority: {high_priority}")
+            
+            # Quick preview of section text
+            section_text = st.session_state.cim_sections[section_name]
+            if section_text:
+                preview = section_text[:300] + "..." if len(section_text) > 300 else section_text
+                st.caption(f"Preview: {preview}")
+            else:
+                st.caption("No content found for this section.")
 
 if __name__ == "__main__":
     main()
