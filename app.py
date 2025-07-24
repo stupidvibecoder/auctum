@@ -868,7 +868,7 @@ def main():
             st.session_state.workspace_initialized = True
     
     # Main title
-    st.markdown('<h1 class="main-title">Auctum Enterprise</h1>', unsafe_allow_html=True)
+    st.markdown('<h1 class="main-title">Auctum</h1>', unsafe_allow_html=True)
 
     # Compliance mode toggle
     col1, col2, col3 = st.columns([2, 1, 1])
