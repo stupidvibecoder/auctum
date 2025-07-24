@@ -11,10 +11,10 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Enhanced CSS with animated background and modern styling
+# Clean dark theme with subtle particles
 st.markdown("""
 <style>
-    /* Hide Streamlit branding and header */
+    /* Hide Streamlit branding */
     .stApp > header {
         background-color: transparent;
     }
@@ -23,123 +23,180 @@ st.markdown("""
         display: none;
     }
     
-    /* Animated background */
+    /* Dark theme background */
     .stApp {
-        background: linear-gradient(-45deg, #ee7752, #e73c7e, #23a6d5, #23d5ab);
-        background-size: 400% 400%;
-        animation: gradientBG 15s ease infinite;
+        background: linear-gradient(135deg, #0f1419 0%, #1a1f2e 50%, #2d3748 100%);
+        color: #ffffff;
     }
     
-    @keyframes gradientBG {
-        0% {
-            background-position: 0% 50%;
-        }
-        50% {
-            background-position: 100% 50%;
-        }
-        100% {
-            background-position: 0% 50%;
-        }
-    }
-    
-    /* Floating particles with pure CSS */
+    /* Floating particles */
     .particle {
         position: fixed;
-        pointer-events: none;
         border-radius: 50%;
-        background: rgba(255, 255, 255, 0.3);
+        background: rgba(99, 102, 241, 0.4);
         animation: float 6s ease-in-out infinite;
+        pointer-events: none;
+        z-index: 0;
+    }
+    
+    .particle:nth-child(odd) {
+        background: rgba(139, 92, 246, 0.3);
+        animation-delay: -2s;
+    }
+    
+    .particle:nth-child(3n) {
+        background: rgba(59, 130, 246, 0.3);
+        animation-delay: -4s;
     }
     
     @keyframes float {
-        0%, 100% { transform: translateY(0px) rotate(0deg); opacity: 0.7; }
-        50% { transform: translateY(-20px) rotate(180deg); opacity: 0.3; }
+        0%, 100% { 
+            transform: translateY(0px) translateX(0px) rotate(0deg); 
+            opacity: 0.4;
+        }
+        33% { 
+            transform: translateY(-30px) translateX(20px) rotate(120deg); 
+            opacity: 0.8;
+        }
+        66% { 
+            transform: translateY(20px) translateX(-20px) rotate(240deg); 
+            opacity: 0.6;
+        }
     }
     
-    /* Custom styling */
+    /* Clean title styling */
     .main-title {
         font-size: 4rem;
         font-weight: 700;
         text-align: center;
-        background: linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%);
+        background: linear-gradient(135deg, #ffffff 0%, #e2e8f0 100%);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
         background-clip: text;
-        margin-bottom: 0.5rem;
+        margin-bottom: 1rem;
         letter-spacing: -2px;
-        text-shadow: 2px 2px 4px rgba(0,0,0,0.1);
     }
     
-    .subtitle {
-        text-align: center;
-        font-size: 1.2rem;
-        color: #ffffff;
-        margin-bottom: 2rem;
-        text-shadow: 1px 1px 2px rgba(0,0,0,0.2);
-    }
-    
-    /* Card styling */
-    .welcome-card {
-        background: rgba(255, 255, 255, 0.95);
+    /* Content styling */
+    .main .block-container {
+        background: rgba(15, 20, 25, 0.6);
+        border-radius: 16px;
+        backdrop-filter: blur(20px);
+        border: 1px solid rgba(255, 255, 255, 0.1);
         padding: 2rem;
-        border-radius: 20px;
-        box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+        margin-top: 1rem;
+        position: relative;
+        z-index: 1;
+    }
+    
+    /* Privacy note */
+    .privacy-note {
+        background: rgba(16, 185, 129, 0.1);
+        border: 1px solid rgba(16, 185, 129, 0.3);
+        border-radius: 12px;
+        padding: 1rem;
+        margin: 1rem 0;
         backdrop-filter: blur(10px);
-        border: 1px solid rgba(255,255,255,0.2);
-        margin: 2rem 0;
+        color: #ffffff;
+    }
+    
+    /* Cards */
+    .welcome-card {
+        background: rgba(30, 41, 59, 0.8);
+        border-radius: 16px;
+        padding: 2rem;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        color: #ffffff;
     }
     
     .feature-item {
-        background: rgba(255, 255, 255, 0.8);
+        background: rgba(99, 102, 241, 0.1);
+        border-left: 4px solid #6366f1;
         padding: 1rem;
-        border-radius: 10px;
-        margin: 0.5rem 0;
-        border-left: 4px solid #667eea;
+        margin: 1rem 0;
+        border-radius: 0 8px 8px 0;
+        color: #e2e8f0;
     }
     
-    /* Button styling */
+    /* Buttons */
     .stButton > button {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
         color: white;
         border: none;
-        border-radius: 10px;
-        padding: 0.5rem 1rem;
+        border-radius: 8px;
+        padding: 0.75rem 1.5rem;
         font-weight: 600;
-        transition: transform 0.2s;
+        transition: all 0.2s;
     }
     
     .stButton > button:hover {
         transform: translateY(-2px);
-        box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
+        box-shadow: 0 8px 20px rgba(99, 102, 241, 0.4);
     }
     
-    /* Privacy note styling */
-    .privacy-note {
-        background: rgba(255, 255, 255, 0.9);
-        padding: 1rem;
-        border-radius: 10px;
-        border-left: 4px solid #28a745;
-        margin: 1rem 0;
-        backdrop-filter: blur(5px);
+    /* Sidebar */
+    .css-1d391kg {
+        background: rgba(15, 20, 25, 0.9);
+        border-right: 1px solid rgba(255, 255, 255, 0.1);
     }
     
-    /* Content containers */
-    .main .block-container {
-        background: rgba(255, 255, 255, 0.05);
-        border-radius: 15px;
-        backdrop-filter: blur(10px);
-        padding: 2rem;
-        margin-top: 1rem;
+    /* Text colors */
+    .stMarkdown, .stText, h1, h2, h3, h4, h5, h6, p, div {
+        color: #ffffff !important;
+    }
+    
+    /* Info boxes */
+    .stInfo {
+        background: rgba(59, 130, 246, 0.1);
+        border: 1px solid rgba(59, 130, 246, 0.3);
+        color: #ffffff;
+    }
+    
+    /* Success boxes */
+    .stSuccess {
+        background: rgba(16, 185, 129, 0.1);
+        border: 1px solid rgba(16, 185, 129, 0.3);
+        color: #ffffff;
+    }
+    
+    /* Warning boxes */
+    .stWarning {
+        background: rgba(245, 158, 11, 0.1);
+        border: 1px solid rgba(245, 158, 11, 0.3);
+        color: #ffffff;
+    }
+    
+    /* Chat messages */
+    .stChatMessage {
+        background: rgba(30, 41, 59, 0.8);
+        border-radius: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        color: #ffffff;
+    }
+    
+    /* Input fields */
+    .stTextInput > div > div > input {
+        background: rgba(30, 41, 59, 0.8);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        color: #ffffff;
+    }
+    
+    .stChatInput > div > div > input {
+        background: rgba(15, 20, 25, 0.8);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        color: #ffffff;
     }
 </style>
 
 <!-- Add floating particles -->
 <div class="particle" style="left: 10%; top: 20%; width: 8px; height: 8px; animation-delay: 0s;"></div>
-<div class="particle" style="left: 20%; top: 80%; width: 6px; height: 6px; animation-delay: 2s;"></div>
+<div class="particle" style="left: 80%; top: 80%; width: 6px; height: 6px; animation-delay: 2s;"></div>
 <div class="particle" style="left: 60%; top: 30%; width: 10px; height: 10px; animation-delay: 4s;"></div>
-<div class="particle" style="left: 80%; top: 70%; width: 7px; height: 7px; animation-delay: 1s;"></div>
-<div class="particle" style="left: 30%; top: 50%; width: 5px; height: 5px; animation-delay: 3s;"></div>
-<div class="particle" style="left: 70%; top: 10%; width: 9px; height: 9px; animation-delay: 5s;"></div>
+<div class="particle" style="left: 20%; top: 70%; width: 7px; height: 7px; animation-delay: 1s;"></div>
+<div class="particle" style="left: 90%; top: 10%; width: 5px; height: 5px; animation-delay: 3s;"></div>
+<div class="particle" style="left: 40%; top: 50%; width: 9px; height: 9px; animation-delay: 5s;"></div>
+<div class="particle" style="left: 70%; top: 60%; width: 8px; height: 8px; animation-delay: 1.5s;"></div>
+<div class="particle" style="left: 30%; top: 90%; width: 6px; height: 6px; animation-delay: 3.5s;"></div>
 """, unsafe_allow_html=True)
 
 # Initialize session state
@@ -248,11 +305,10 @@ Please provide a comprehensive answer based on the information provided. If you 
         return f"Error generating response: {str(e)}"
 
 def main():
-    # Main title
+    # Clean title only
     st.markdown('<h1 class="main-title">Auctum</h1>', unsafe_allow_html=True)
-    st.markdown('<p class="subtitle">AI-Powered CIM Analysis Platform</p>', unsafe_allow_html=True)
 
-    # Privacy note with better styling
+    # Privacy note
     st.markdown("""
     <div class="privacy-note">
         <strong>🔐 Privacy & Security</strong><br>
@@ -297,7 +353,7 @@ def main():
     
     # Main content area
     if st.session_state.cim_text is None:
-        # Welcome screen with better design
+        # Welcome screen
         col1, col2, col3 = st.columns([1, 2, 1])
         with col2:
             st.markdown("""
@@ -310,7 +366,7 @@ def main():
                 </div>
                 
                 <div class="feature-item">
-                    <strong>🤖 AI-Powered Analysis</strong><br>
+                    <strong>🤖 AI Analysis</strong><br>
                     Get instant insights and comprehensive analysis of investment opportunities
                 </div>
                 
@@ -324,10 +380,10 @@ def main():
                     Ask specific questions about your CIM documents and get detailed answers
                 </div>
                 
-                <hr style="margin: 2rem 0;">
+                <hr style="border: 1px solid rgba(255,255,255,0.1); margin: 2rem 0;">
                 
-                <h4 style="text-align: center;">Getting Started</h4>
-                <ol style="padding-left: 1.5rem;">
+                <h4 style="text-align: center; margin-bottom: 1rem;">Getting Started</h4>
+                <ol style="padding-left: 1.5rem; color: #94a3b8;">
                     <li>Enter your OpenAI API key in the sidebar</li>
                     <li>Upload a CIM PDF file</li>
                     <li>Click "Process CIM" to analyze</li>
@@ -344,7 +400,7 @@ def show_analysis_interface(api_key):
     
     st.info(f"📄 **Document Loaded**: {len(st.session_state.cim_text):,} characters extracted and ready for analysis")
     
-    # Quick analysis buttons with better spacing
+    # Quick analysis buttons
     st.subheader("🎯 Quick Analysis")
     col1, col2, col3 = st.columns(3)
     
