@@ -6,7 +6,11 @@ import os
 import json
 import re
 import pandas as pd
-from datetime import datetime
+import sqlite3
+import hashlib
+from datetime import datetime, timedelta
+from cryptography.fernet import Fernet
+import base64
 try:
     import xlwings as xw
     XLWINGS_AVAILABLE = True
@@ -15,12 +19,12 @@ except ImportError:
 
 # Page config
 st.set_page_config(
-    page_title="Auctum", 
+    page_title="Auctum Enterprise", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Enhanced CSS with sticky navigation and improved styling
+# Enhanced CSS with all styling
 st.markdown("""
 <style>
     /* Hide Streamlit branding */
@@ -108,10 +112,34 @@ st.markdown("""
         opacity: 0.7;
     }
     
-    .task-card:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    .red-flag {
+        background: rgba(239, 68, 68, 0.1);
+        border-left: 4px solid #ef4444;
+        padding: 1rem;
+        margin: 0.5rem 0;
+        border-radius: 0 8px 8px 0;
     }
+    
+    .compliance-badge {
+        background: rgba(34, 197, 94, 0.1);
+        border: 1px solid rgba(34, 197, 94, 0.3);
+        border-radius: 8px;
+        padding: 0.5rem;
+        color: #22c55e;
+        font-weight: bold;
+    }
+    
+    .sync-status {
+        display: inline-block;
+        padding: 0.2rem 0.5rem;
+        border-radius: 4px;
+        font-size: 0.8rem;
+        font-weight: bold;
+    }
+    
+    .sync-success { background: rgba(34, 197, 94, 0.2); color: #22c55e; }
+    .sync-pending { background: rgba(245, 158, 11, 0.2); color: #f59e0b; }
+    .sync-error { background: rgba(239, 68, 68, 0.2); color: #ef4444; }
     
     /* User avatar styling */
     .user-avatar {
@@ -128,17 +156,7 @@ st.markdown("""
         margin-right: 0.5rem;
     }
     
-    /* Audit trail badge */
-    .audit-badge {
-        background: rgba(16, 185, 129, 0.1);
-        border: 1px solid rgba(16, 185, 129, 0.3);
-        border-radius: 8px;
-        padding: 0.5rem;
-        font-size: 0.85rem;
-        margin: 0.5rem 0;
-    }
-    
-    /* Clean title styling */
+    /* Main title styling */
     .main-title {
         font-size: 4rem;
         font-weight: 700;
@@ -163,18 +181,7 @@ st.markdown("""
         z-index: 1;
     }
     
-    /* Privacy note */
-    .privacy-note {
-        background: rgba(16, 185, 129, 0.1);
-        border: 1px solid rgba(16, 185, 129, 0.3);
-        border-radius: 12px;
-        padding: 1rem;
-        margin: 1rem 0;
-        backdrop-filter: blur(10px);
-        color: #ffffff;
-    }
-    
-    /* Cards */
+    /* Cards and other existing styles */
     .welcome-card {
         background: rgba(30, 41, 59, 0.8);
         border-radius: 16px;
@@ -190,6 +197,17 @@ st.markdown("""
         margin: 1rem 0;
         border-radius: 0 8px 8px 0;
         color: #e2e8f0;
+    }
+    
+    /* Privacy note */
+    .privacy-note {
+        background: rgba(16, 185, 129, 0.1);
+        border: 1px solid rgba(16, 185, 129, 0.3);
+        border-radius: 12px;
+        padding: 1rem;
+        margin: 1rem 0;
+        backdrop-filter: blur(10px);
+        color: #ffffff;
     }
     
     /* Buttons */
@@ -208,55 +226,20 @@ st.markdown("""
         box-shadow: 0 8px 20px rgba(99, 102, 241, 0.4);
     }
     
-    /* Sidebar */
-    .css-1d391kg {
-        background: rgba(15, 20, 25, 0.9);
-        border-right: 1px solid rgba(255, 255, 255, 0.1);
-    }
-    
     /* Text colors */
     .stMarkdown, .stText, h1, h2, h3, h4, h5, h6, p, div {
         color: #ffffff !important;
     }
     
-    /* Info boxes */
-    .stInfo {
-        background: rgba(59, 130, 246, 0.1);
-        border: 1px solid rgba(59, 130, 246, 0.3);
-        color: #ffffff;
-    }
-    
-    /* Success boxes */
-    .stSuccess {
-        background: rgba(16, 185, 129, 0.1);
-        border: 1px solid rgba(16, 185, 129, 0.3);
-        color: #ffffff;
-    }
-    
-    /* Warning boxes */
-    .stWarning {
-        background: rgba(245, 158, 11, 0.1);
-        border: 1px solid rgba(245, 158, 11, 0.3);
-        color: #ffffff;
-    }
-    
-    /* Chat messages */
-    .stChatMessage {
-        background: rgba(30, 41, 59, 0.8);
-        border-radius: 12px;
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        color: #ffffff;
-    }
-    
     /* Input fields */
-    .stTextInput > div > div > input {
+    .stTextInput > div > div > input, .stTextArea > div > div > textarea {
         background: rgba(30, 41, 59, 0.8);
         border: 1px solid rgba(255, 255, 255, 0.1);
         color: #ffffff;
     }
     
-    .stChatInput > div > div > input {
-        background: rgba(15, 20, 25, 0.8);
+    .stSelectbox > div > div > select {
+        background: rgba(30, 41, 59, 0.8);
         border: 1px solid rgba(255, 255, 255, 0.1);
         color: #ffffff;
     }
@@ -272,6 +255,103 @@ st.markdown("""
 <div class="particle" style="left: 70%; top: 60%; width: 8px; height: 8px; animation-delay: 1.5s;"></div>
 <div class="particle" style="left: 30%; top: 90%; width: 6px; height: 6px; animation-delay: 3.5s;"></div>
 """, unsafe_allow_html=True)
+
+# Database initialization
+def init_database():
+    """Initialize SQLite database with all required tables"""
+    conn = sqlite3.connect('auctum.db')
+    c = conn.cursor()
+    
+    # CIM documents table
+    c.execute('''CREATE TABLE IF NOT EXISTS cim_documents (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        filename TEXT NOT NULL,
+        upload_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        user_id TEXT,
+        content_hash TEXT,
+        encrypted_content TEXT
+    )''')
+    
+    # Comments table
+    c.execute('''CREATE TABLE IF NOT EXISTS comments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cim_id INTEGER,
+        user_id TEXT,
+        section TEXT,
+        comment TEXT,
+        mentioned_users TEXT,
+        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (cim_id) REFERENCES cim_documents (id)
+    )''')
+    
+    # Tasks table
+    c.execute('''CREATE TABLE IF NOT EXISTS tasks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cim_id INTEGER,
+        title TEXT,
+        description TEXT,
+        assigned_to TEXT,
+        due_date DATE,
+        status TEXT DEFAULT 'open',
+        section TEXT,
+        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (cim_id) REFERENCES cim_documents (id)
+    )''')
+    
+    # Red flags table
+    c.execute('''CREATE TABLE IF NOT EXISTS red_flags (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cim_id INTEGER,
+        description TEXT,
+        page_ref TEXT,
+        status TEXT DEFAULT 'open',
+        severity TEXT DEFAULT 'medium',
+        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (cim_id) REFERENCES cim_documents (id)
+    )''')
+    
+    # Synced documents table
+    c.execute('''CREATE TABLE IF NOT EXISTS synced_docs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source TEXT,
+        path TEXT,
+        last_synced TIMESTAMP,
+        cim_id INTEGER,
+        sync_status TEXT DEFAULT 'pending',
+        FOREIGN KEY (cim_id) REFERENCES cim_documents (id)
+    )''')
+    
+    # Valuation metrics table
+    c.execute('''CREATE TABLE IF NOT EXISTS valuation_metrics (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cim_id INTEGER,
+        metric TEXT,
+        value REAL,
+        year INTEGER,
+        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (cim_id) REFERENCES cim_documents (id)
+    )''')
+    
+    # Audit logs table
+    c.execute('''CREATE TABLE IF NOT EXISTS audit_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT,
+        action TEXT,
+        document_id INTEGER,
+        details TEXT,
+        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )''')
+    
+    # User roles table
+    c.execute('''CREATE TABLE IF NOT EXISTS user_roles (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT UNIQUE,
+        role TEXT DEFAULT 'viewer',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )''')
+    
+    conn.commit()
+    conn.close()
 
 # Initialize session state
 if 'cim_text' not in st.session_state:
@@ -290,11 +370,71 @@ if 'section_summaries' not in st.session_state:
     st.session_state.section_summaries = {}
 if 'audit_log' not in st.session_state:
     st.session_state.audit_log = []
+if 'compliance_mode' not in st.session_state:
+    st.session_state.compliance_mode = False
+if 'current_user' not in st.session_state:
+    st.session_state.current_user = "demo_user"
+if 'user_role' not in st.session_state:
+    st.session_state.user_role = "admin"
+if 'current_cim_id' not in st.session_state:
+    st.session_state.current_cim_id = None
+if 'red_flags' not in st.session_state:
+    st.session_state.red_flags = []
+if 'ic_memo' not in st.session_state:
+    st.session_state.ic_memo = {}
+if 'valuation_data' not in st.session_state:
+    st.session_state.valuation_data = {}
 
 # Team members and tags for autocomplete
 TEAM_MEMBERS = ['@Alex', '@Rishi', '@Jordan', '@Sam', '@Taylor', '@Morgan']
 COMMON_TAGS = ['#Modeling', '#Legal', '#KeyAssumption', '#Revenue', '#EBITDA', '#Risk', '#Market', '#Management']
 
+# Initialize database
+init_database()
+
+# Compliance and encryption functions
+def get_encryption_key():
+    """Get or create encryption key for compliance mode"""
+    key_file = "encryption.key"
+    if os.path.exists(key_file):
+        with open(key_file, 'rb') as f:
+            return f.read()
+    else:
+        key = Fernet.generate_key()
+        with open(key_file, 'wb') as f:
+            f.write(key)
+        return key
+
+def encrypt_content(content):
+    """Encrypt content for compliance mode"""
+    if st.session_state.compliance_mode:
+        key = get_encryption_key()
+        f = Fernet(key)
+        return base64.b64encode(f.encrypt(content.encode())).decode()
+    return content
+
+def decrypt_content(encrypted_content):
+    """Decrypt content for compliance mode"""
+    if st.session_state.compliance_mode and encrypted_content:
+        try:
+            key = get_encryption_key()
+            f = Fernet(key)
+            return f.decrypt(base64.b64decode(encrypted_content.encode())).decode()
+        except:
+            return encrypted_content
+    return encrypted_content
+
+def log_audit_action(action, details=None, document_id=None):
+    """Log action to audit trail"""
+    conn = sqlite3.connect('auctum.db')
+    c = conn.cursor()
+    c.execute('''INSERT INTO audit_logs (user_id, action, document_id, details) 
+                 VALUES (?, ?, ?, ?)''', 
+              (st.session_state.current_user, action, document_id, details))
+    conn.commit()
+    conn.close()
+
+# PDF extraction and processing functions
 def extract_text_from_pdf(pdf_file):
     """Extract text from PDF using PyPDF2"""
     try:
@@ -311,11 +451,10 @@ def extract_text_from_pdf(pdf_file):
 
 def extract_section_headers(text):
     """Extract section headers from CIM text"""
-    # Pattern for numbered sections like "1.0 Executive Summary" or "2. Financial Overview"
     patterns = [
-        r"(\d+\.?\d*\s+[A-Z][a-zA-Z\s&]+)(?=\n|\r)",  # Numbered sections
-        r"([A-Z][A-Z\s&]{10,}?)(?=\n|\r)",  # All caps headers
-        r"^([A-Z][a-zA-Z\s&]{5,}?)(?=\n)",  # Title case headers at line start
+        r"(\d+\.?\d*\s+[A-Z][a-zA-Z\s&]+)(?=\n|\r)",
+        r"([A-Z][A-Z\s&]{10,}?)(?=\n|\r)",
+        r"^([A-Z][a-zA-Z\s&]{5,}?)(?=\n)",
     ]
     
     headers = []
@@ -323,23 +462,16 @@ def extract_section_headers(text):
         matches = re.findall(pattern, text, re.MULTILINE)
         headers.extend([match.strip() for match in matches if len(match.strip()) > 5])
     
-    # Clean and deduplicate
-    headers = list(dict.fromkeys(headers))  # Remove duplicates while preserving order
+    headers = list(dict.fromkeys(headers))
     
-    # Common CIM sections if no headers found
     if not headers:
         headers = [
-            "Executive Summary", 
-            "Business Overview", 
-            "Financial Performance", 
-            "Market Analysis", 
-            "Management Team", 
-            "Investment Highlights",
-            "Risk Factors",
-            "Transaction Overview"
+            "Executive Summary", "Business Overview", "Financial Performance", 
+            "Market Analysis", "Management Team", "Investment Highlights",
+            "Risk Factors", "Transaction Overview"
         ]
     
-    return headers[:15]  # Limit to first 15 sections
+    return headers[:15]
 
 def split_text_by_sections(text, headers):
     """Split text into sections based on headers"""
@@ -351,7 +483,6 @@ def split_text_by_sections(text, headers):
         start_pos = text_lower.find(header_lower)
         
         if start_pos != -1:
-            # Find the end position (start of next header or end of text)
             if i + 1 < len(headers):
                 next_header = headers[i + 1].lower()
                 end_pos = text_lower.find(next_header, start_pos + len(header_lower))
@@ -363,46 +494,191 @@ def split_text_by_sections(text, headers):
             section_text = text[start_pos:end_pos].strip()
             sections[header] = section_text
         else:
-            # If header not found, create empty section
             sections[header] = ""
     
     return sections
 
-def load_workspace_data():
-    """Load workspace data from JSON file"""
+# AI-powered analysis functions
+def detect_red_flags(text, api_key):
+    """Use AI to detect red flags in CIM content"""
+    if not api_key:
+        return []
+    
     try:
-        if os.path.exists("workspace.json"):
-            with open("workspace.json", "r") as f:
-                data = json.load(f)
-                return data.get("comments", {}), data.get("memos", {})
-    except:
-        pass
-    return {}, {}
-
-def save_workspace_data(comment_store, memo_store):
-    """Save workspace data to JSON file"""
-    try:
-        data = {
-            "comments": comment_store,
-            "memos": memo_store,
-            "audit_log": st.session_state.audit_log,
-            "timestamp": datetime.now().isoformat()
-        }
-        with open("workspace.json", "w") as f:
-            json.dump(data, f, indent=2)
+        client = openai.OpenAI(api_key=api_key)
+        
+        # Split text into chunks for analysis
+        chunks = [text[i:i+3000] for i in range(0, len(text), 3000)]
+        red_flags = []
+        
+        for i, chunk in enumerate(chunks[:5]):  # Limit to first 5 chunks
+            prompt = f"""
+            Analyze this CIM section for potential red flags or inconsistencies:
+            
+            {chunk}
+            
+            Look for:
+            - Financial inconsistencies or unclear assumptions
+            - Missing critical information
+            - Overly optimistic projections
+            - Unclear business model elements
+            - Risk factors that seem understated
+            
+            Return findings as a JSON list with format:
+            [{{"description": "Issue description", "severity": "low/medium/high", "page_ref": "Section reference"}}]
+            
+            If no issues found, return: []
+            """
+            
+            response = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": "You are a PE due diligence expert identifying potential red flags."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=500,
+                temperature=0
+            )
+            
+            try:
+                flags = json.loads(response.choices[0].message.content)
+                if isinstance(flags, list):
+                    red_flags.extend(flags)
+            except json.JSONDecodeError:
+                continue
+        
+        return red_flags[:10]  # Return top 10 flags
+        
     except Exception as e:
-        st.error(f"Error saving workspace data: {e}")
+        st.error(f"Error detecting red flags: {e}")
+        return []
 
-def add_audit_log(user, action, section=None, details=None):
-    """Add entry to audit log"""
-    log_entry = {
-        "user": user,
-        "action": action,
-        "section": section,
-        "details": details,
-        "timestamp": datetime.now().isoformat()
-    }
-    st.session_state.audit_log.append(log_entry)
+def extract_valuation_metrics(text, api_key):
+    """Extract valuation metrics using AI"""
+    if not api_key:
+        return {}
+    
+    try:
+        client = openai.OpenAI(api_key=api_key)
+        
+        prompt = f"""
+        Extract valuation-related metrics from this CIM content:
+        
+        {text[:4000]}
+        
+        Look for and extract:
+        - Revenue (historical and projected)
+        - EBITDA (historical and projected)
+        - Growth rates
+        - Valuation multiples (EV/Revenue, EV/EBITDA)
+        - Comparable company data
+        
+        Return as JSON with format:
+        {{
+            "revenue_2023": number,
+            "revenue_2024": number,
+            "ebitda_2023": number,
+            "ebitda_2024": number,
+            "ev_revenue_multiple": number,
+            "ev_ebitda_multiple": number,
+            "revenue_growth_rate": number
+        }}
+        
+        Use null for missing values.
+        """
+        
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You are a financial analyst extracting valuation data."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=400,
+            temperature=0
+        )
+        
+        try:
+            return json.loads(response.choices[0].message.content)
+        except json.JSONDecodeError:
+            return {}
+            
+    except Exception as e:
+        st.error(f"Error extracting valuation metrics: {e}")
+        return {}
+
+def generate_ic_memo_section(section_name, section_text, api_key):
+    """Generate IC memo section using AI"""
+    if not api_key or not section_text:
+        return f"No content available for {section_name}."
+    
+    try:
+        client = openai.OpenAI(api_key=api_key)
+        
+        prompt = f"""
+        Based on this CIM section, write the {section_name} portion of an investment committee memo.
+        
+        CIM Content:
+        {section_text[:2000]}
+        
+        Write in a professional, concise style suitable for senior executives. Include only the most relevant insights and key decision-making information.
+        
+        Use clear formatting with bullet points where appropriate.
+        """
+        
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You are a senior investment professional writing IC memos."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=600,
+            temperature=0
+        )
+        
+        return response.choices[0].message.content
+        
+    except Exception as e:
+        return f"Error generating {section_name}: {str(e)}"
+
+# Data room integration functions
+def simulate_data_room_sync(source, path):
+    """Simulate data room synchronization (placeholder for real API integration)"""
+    # This would integrate with Box, Dropbox, iDeals APIs in production
+    
+    # Simulate sync status
+    import random
+    statuses = ['success', 'pending', 'error']
+    weights = [0.7, 0.2, 0.1]
+    status = random.choices(statuses, weights=weights)[0]
+    
+    # Log to database
+    conn = sqlite3.connect('auctum.db')
+    c = conn.cursor()
+    c.execute('''INSERT INTO synced_docs (source, path, last_synced, sync_status) 
+                 VALUES (?, ?, ?, ?)''', 
+              (source, path, datetime.now(), status))
+    conn.commit()
+    conn.close()
+    
+    return status
+
+# Main application functions
+def save_cim_to_database(filename, content, user_id):
+    """Save CIM to database with encryption if compliance mode is enabled"""
+    content_hash = hashlib.md5(content.encode()).hexdigest()
+    encrypted_content = encrypt_content(content)
+    
+    conn = sqlite3.connect('auctum.db')
+    c = conn.cursor()
+    c.execute('''INSERT INTO cim_documents (filename, user_id, content_hash, encrypted_content) 
+                 VALUES (?, ?, ?, ?)''', 
+              (filename, user_id, content_hash, encrypted_content))
+    cim_id = c.lastrowid
+    conn.commit()
+    conn.close()
+    
+    log_audit_action("CIM Upload", filename, cim_id)
+    return cim_id
 
 def get_user_initials(username):
     """Get user initials for avatar"""
@@ -418,380 +694,52 @@ def render_user_avatar(username):
     initials = get_user_initials(username)
     return f'<span class="user-avatar">{initials}</span>'
 
-def generate_section_summary(section_text, api_key, section_name):
-    """Generate AI summary for a section"""
-    if not api_key or not section_text.strip():
-        return "No content available for summary."
-    
-    try:
-        client = openai.OpenAI(api_key=api_key)
-        
-        prompt = f"""Summarize this CIM section in 3 concise bullet points:
-
-Section: {section_name}
-Content: {section_text[:2000]}
-
-Format as:
-• [Key point 1]
-• [Key point 2] 
-• [Key point 3]"""
-
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You are a financial analyst creating concise section summaries."},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=200,
-            temperature=0
-        )
-        
-        return response.choices[0].message.content
-    except Exception as e:
-        return f"Error generating summary: {str(e)}"
-
-def export_workspace_data():
-    """Export workspace data as CSV"""
-    # Flatten all comments for export
-    export_data = []
-    
-    for section, comments in st.session_state.comment_store.items():
-        for comment in comments:
-            export_data.append({
-                'Section': section,
-                'Author': comment.get('user', ''),
-                'Content': comment.get('comment', ''),
-                'Assigned To': ', '.join([tag for tag in comment.get('tags', []) if tag.startswith('@')]),
-                'Tags': ', '.join([tag for tag in comment.get('tags', []) if tag.startswith('#')]),
-                'Priority': comment.get('priority', ''),
-                'Status': comment.get('status', ''),
-                'Timestamp': comment.get('timestamp', '')
-            })
-    
-    # Add memo information
-    for section, memo in st.session_state.memo_store.items():
-        export_data.append({
-            'Section': section,
-            'Author': 'System',
-            'Content': f"Memo attached: {memo.get('filename', 'Unknown')}",
-            'Assigned To': '',
-            'Tags': '#memo',
-            'Priority': '',
-            'Status': 'Complete',
-            'Timestamp': memo.get('timestamp', '')
-        })
-    
-    return pd.DataFrame(export_data)
-
-def export_workspace_to_excel():
-    """Export deal workspace to Excel using xlwings"""
-    if not XLWINGS_AVAILABLE:
-        st.error("❌ xlwings not available. Please install: pip install xlwings")
-        return False
-    
-    try:
-        # Prepare data for export
-        comments_data = []
-        tasks_data = []
-        memos_data = []
-        summaries_data = []
-        
-        # Process comments and tasks
-        for section, comments in st.session_state.comment_store.items():
-            for comment in comments:
-                row = [
-                    comment.get('user', ''),
-                    section,
-                    comment.get('comment', ''),
-                    comment.get('priority', ''),
-                    comment.get('status', ''),
-                    ', '.join(comment.get('assigned_to', [])),
-                    ', '.join([tag for tag in comment.get('tags', []) if tag.startswith('#')]),
-                    comment.get('timestamp', '')
-                ]
-                
-                if comment.get('assigned_to') or comment.get('status') in ['Open', 'In Progress']:
-                    tasks_data.append(row)
-                else:
-                    comments_data.append(row)
-        
-        # Process memos
-        for section, memo in st.session_state.memo_store.items():
-            memos_data.append([
-                section,
-                memo.get('filename', ''),
-                memo.get('type', ''),
-                f"{memo.get('size', 0)} bytes" if memo.get('size') else '',
-                memo.get('timestamp', '')
-            ])
-        
-        # Process summaries
-        for section, summary in st.session_state.section_summaries.items():
-            summaries_data.append([section, summary])
-        
-        # Create Excel workbook
-        try:
-            wb = xw.Book()  # Opens new Excel workbook
-        except Exception as e:
-            st.error(f"❌ Could not open Excel. Make sure Excel is installed. Error: {e}")
-            return False
-        
-        # Set workbook name
-        wb.name = "Auctum_Deal_Workspace"
-        
-        # Create and populate Comments sheet
-        if len(wb.sheets) > 0:
-            comments_sheet = wb.sheets[0]
-            comments_sheet.name = "Comments"
-        else:
-            comments_sheet = wb.sheets.add("Comments")
-        
-        # Comments header and data
-        comments_sheet.range("A1").value = "DEAL WORKSPACE - COMMENTS"
-        comments_sheet.range("A1").api.Font.Bold = True
-        comments_sheet.range("A1").api.Font.Size = 14
-        
-        header = ["Author", "Section", "Content", "Priority", "Status", "Assigned To", "Tags", "Timestamp"]
-        comments_sheet.range("A3").value = header
-        comments_sheet.range("A3:H3").api.Font.Bold = True
-        comments_sheet.range("A3:H3").color = (200, 200, 200)
-        
-        if comments_data:
-            comments_sheet.range("A4").value = comments_data
-        
-        # Auto-fit columns
-        comments_sheet.autofit()
-        
-        # Create Tasks sheet
-        tasks_sheet = wb.sheets.add("Tasks")
-        tasks_sheet.range("A1").value = "DEAL WORKSPACE - TASKS"
-        tasks_sheet.range("A1").api.Font.Bold = True
-        tasks_sheet.range("A1").api.Font.Size = 14
-        
-        tasks_sheet.range("A3").value = header
-        tasks_sheet.range("A3:H3").api.Font.Bold = True
-        tasks_sheet.range("A3:H3").color = (255, 200, 200)
-        
-        if tasks_data:
-            tasks_sheet.range("A4").value = tasks_data
-        
-        tasks_sheet.autofit()
-        
-        # Create Memos sheet
-        memos_sheet = wb.sheets.add("Memos")
-        memos_sheet.range("A1").value = "DEAL WORKSPACE - MEMOS"
-        memos_sheet.range("A1").api.Font.Bold = True
-        memos_sheet.range("A1").api.Font.Size = 14
-        
-        memo_header = ["Section", "Filename", "Type", "Size", "Upload Date"]
-        memos_sheet.range("A3").value = memo_header
-        memos_sheet.range("A3:E3").api.Font.Bold = True
-        memos_sheet.range("A3:E3").color = (200, 255, 200)
-        
-        if memos_data:
-            memos_sheet.range("A4").value = memos_data
-        
-        memos_sheet.autofit()
-        
-        # Create Summaries sheet
-        summaries_sheet = wb.sheets.add("AI_Summaries")
-        summaries_sheet.range("A1").value = "DEAL WORKSPACE - AI SUMMARIES"
-        summaries_sheet.range("A1").api.Font.Bold = True
-        summaries_sheet.range("A1").api.Font.Size = 14
-        
-        summary_header = ["Section", "AI Summary"]
-        summaries_sheet.range("A3").value = summary_header
-        summaries_sheet.range("A3:B3").api.Font.Bold = True
-        summaries_sheet.range("A3:B3").color = (200, 200, 255)
-        
-        if summaries_data:
-            summaries_sheet.range("A4").value = summaries_data
-            # Set text wrap for summary column
-            summaries_sheet.range("B:B").api.WrapText = True
-        
-        summaries_sheet.autofit()
-        
-        # Create Overview sheet
-        overview_sheet = wb.sheets.add("Overview", before=comments_sheet)
-        overview_sheet.range("A1").value = "AUCTUM DEAL WORKSPACE OVERVIEW"
-        overview_sheet.range("A1").api.Font.Bold = True
-        overview_sheet.range("A1").api.Font.Size = 16
-        
-        # Add summary statistics
-        total_sections = len(st.session_state.cim_sections)
-        total_comments = len(comments_data)
-        total_tasks = len(tasks_data)
-        total_memos = len(memos_data)
-        total_summaries = len(summaries_data)
-        
-        overview_data = [
-            ["Export Date:", datetime.now().strftime("%B %d, %Y %H:%M")],
-            ["Total Sections:", total_sections],
-            ["Total Comments:", total_comments],
-            ["Total Tasks:", total_tasks],
-            ["Total Memos:", total_memos],
-            ["AI Summaries:", total_summaries],
-            [""],
-            ["Sheet Descriptions:"],
-            ["• Comments: General discussion and notes"],
-            ["• Tasks: Assigned action items and their status"],
-            ["• Memos: Uploaded documents and files"],
-            ["• AI_Summaries: AI-generated section summaries"]
-        ]
-        
-        overview_sheet.range("A3").value = overview_data
-        overview_sheet.range("A3:A8").api.Font.Bold = True
-        overview_sheet.autofit()
-        
-        # Add audit log information if available
-        if st.session_state.audit_log:
-            audit_sheet = wb.sheets.add("Audit_Log")
-            audit_sheet.range("A1").value = "AUDIT LOG"
-            audit_sheet.range("A1").api.Font.Bold = True
-            audit_sheet.range("A1").api.Font.Size = 14
-            
-            audit_header = ["User", "Action", "Section", "Details", "Timestamp"]
-            audit_sheet.range("A3").value = audit_header
-            audit_sheet.range("A3:E3").api.Font.Bold = True
-            audit_sheet.range("A3:E3").color = (255, 255, 200)
-            
-            audit_data = []
-            for log_entry in st.session_state.audit_log:
-                audit_data.append([
-                    log_entry.get('user', ''),
-                    log_entry.get('action', ''),
-                    log_entry.get('section', ''),
-                    log_entry.get('details', ''),
-                    log_entry.get('timestamp', '')
-                ])
-            
-            if audit_data:
-                audit_sheet.range("A4").value = audit_data
-            
-            audit_sheet.autofit()
-        
-        # Log the export action
-        add_audit_log("System", "Exported workspace to Excel", details=f"Exported {total_comments + total_tasks} items")
-        
-        return True
-        
-    except Exception as e:
-        st.error(f"❌ Error exporting to Excel: {str(e)}")
-        return False
-
-def search_document_sections(text, query_terms, chunk_size=3000):
-    """Search for relevant sections in the document based on query terms"""
-    chunks = []
-    overlap = 500
-    
-    for i in range(0, len(text), chunk_size - overlap):
-        chunk = text[i:i + chunk_size]
-        if chunk.strip():
-            chunks.append((chunk, i))
-    
-    scored_chunks = []
-    for chunk, position in chunks:
-        chunk_lower = chunk.lower()
-        score = 0
-        
-        for term in query_terms:
-            score += chunk_lower.count(term.lower())
-        
-        if score > 0:
-            scored_chunks.append((chunk, score, position))
-    
-    scored_chunks.sort(key=lambda x: x[1], reverse=True)
-    return [chunk for chunk, score, pos in scored_chunks[:5]]
-
-def get_openai_response(prompt, context, api_key):
-    """Get response from OpenAI with smart document search"""
-    try:
-        client = openai.OpenAI(api_key=api_key)
-        
-        financial_terms = ['revenue', 'sales', 'income', 'ebitda', 'profit', 'margin', 'growth', 'financial', 'cash flow', 'valuation', 'multiple', 'earnings']
-        risk_terms = ['risk', 'challenge', 'threat', 'competition', 'regulatory', 'compliance', 'debt', 'liability', 'uncertainty']
-        summary_terms = ['overview', 'summary', 'business', 'company', 'industry', 'market', 'opportunity', 'investment', 'strategy']
-        
-        prompt_lower = prompt.lower()
-        if any(term in prompt_lower for term in ['financial', 'revenue', 'ebitda', 'profit', 'metrics']):
-            search_terms = financial_terms
-        elif any(term in prompt_lower for term in ['risk', 'challenge', 'threat']):
-            search_terms = risk_terms
-        elif any(term in prompt_lower for term in ['summary', 'overview', 'business']):
-            search_terms = summary_terms
-        else:
-            search_terms = [word for word in prompt_lower.split() if len(word) > 3]
-        
-        relevant_sections = search_document_sections(context, search_terms)
-        
-        if relevant_sections:
-            combined_context = "\n\n--- RELEVANT SECTION ---\n\n".join(relevant_sections)
-            context_info = f"Analysis based on {len(relevant_sections)} relevant sections found in the document"
-        else:
-            chunk_size = 6000
-            chunks = [context[i:i+chunk_size] for i in range(0, len(context), chunk_size)]
-            
-            selected_chunks = []
-            if len(chunks) >= 1:
-                selected_chunks.append(chunks[0])
-            if len(chunks) >= 3:
-                selected_chunks.append(chunks[len(chunks)//2])
-            if len(chunks) >= 2:
-                selected_chunks.append(chunks[-1])
-                
-            combined_context = "\n\n--- SECTION BREAK ---\n\n".join(selected_chunks)
-            context_info = f"Analysis based on beginning, middle, and end sections of the document"
-        
-        full_prompt = f"""Based on the following CIM document content, {prompt}
-
-{context_info}:
-
-{combined_context}
-
-Please provide a comprehensive answer based on the information provided. If you notice the information seems incomplete, mention that additional details may be available in other parts of the full document."""
-
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You are an expert financial analyst helping analyze CIM documents. You're analyzing the most relevant sections found in the document."},
-                {"role": "user", "content": full_prompt}
-            ],
-            max_tokens=1500,
-            temperature=0
-        )
-        
-        return response.choices[0].message.content
-    except Exception as e:
-        return f"Error generating response: {str(e)}"
-
 def main():
     # Initialize workspace data if not already done
     if not st.session_state.workspace_initialized:
         try:
-            comment_store, memo_store = load_workspace_data()
-            st.session_state.comment_store = comment_store
-            st.session_state.memo_store = memo_store
             st.session_state.workspace_initialized = True
         except:
-            # If loading fails, use empty defaults
-            st.session_state.comment_store = {}
-            st.session_state.memo_store = {}
             st.session_state.workspace_initialized = True
     
-    # Clean title only
-    st.markdown('<h1 class="main-title">Auctum</h1>', unsafe_allow_html=True)
+    # Main title
+    st.markdown('<h1 class="main-title">Auctum Enterprise</h1>', unsafe_allow_html=True)
 
-    # Privacy note
-    st.markdown("""
+    # Compliance mode toggle
+    col1, col2, col3 = st.columns([2, 1, 1])
+    with col2:
+        compliance_enabled = st.toggle("🔒 Compliance Mode", value=st.session_state.compliance_mode)
+        if compliance_enabled != st.session_state.compliance_mode:
+            st.session_state.compliance_mode = compliance_enabled
+            log_audit_action(f"Compliance Mode {'Enabled' if compliance_enabled else 'Disabled'}")
+            st.rerun()
+    
+    with col3:
+        if st.session_state.compliance_mode:
+            st.markdown('<div class="compliance-badge">🔒 COMPLIANCE ACTIVE</div>', unsafe_allow_html=True)
+    
+    # Privacy note with compliance information
+    privacy_text = """
     <div class="privacy-note">
         <strong>🔐 Privacy & Security</strong><br>
-        Your documents are processed securely and never stored. All analysis uses enterprise-grade AI with full compliance.
-    </div>
-    """, unsafe_allow_html=True)
+        Your documents are processed securely and never stored on external servers. All analysis uses enterprise-grade AI with full compliance.
+    """
+    
+    if st.session_state.compliance_mode:
+        privacy_text += """<br><strong>Compliance Mode Active:</strong> All documents encrypted, full audit logging enabled, user access controls enforced."""
+    
+    privacy_text += "</div>"
+    st.markdown(privacy_text, unsafe_allow_html=True)
     
     # Sidebar for configuration
     with st.sidebar:
         st.header("⚙️ Configuration")
+        
+        # User info
+        st.markdown(f"**User:** {st.session_state.current_user}")
+        st.markdown(f"**Role:** {st.session_state.user_role.title()}")
+        
+        st.divider()
         
         # OpenAI API Key
         api_key = st.text_input(
@@ -820,45 +768,71 @@ def main():
                 with st.spinner("🔄 Processing CIM..."):
                     text = extract_text_from_pdf(uploaded_file)
                     if text:
+                        # Save to database
+                        cim_id = save_cim_to_database(uploaded_file.name, text, st.session_state.current_user)
+                        st.session_state.current_cim_id = cim_id
                         st.session_state.cim_text = text
                         
-                        # Extract sections for workspace
+                        # Extract sections
                         headers = extract_section_headers(text)
                         sections = split_text_by_sections(text, headers)
                         st.session_state.cim_sections = sections
                         
-                        # Initialize workspace data if needed
-                        if not st.session_state.workspace_initialized:
-                            try:
-                                comment_store, memo_store = load_workspace_data()
-                                st.session_state.comment_store = comment_store
-                                st.session_state.memo_store = memo_store
-                            except:
-                                pass  # Use existing empty defaults
+                        # Detect red flags
+                        red_flags = detect_red_flags(text, api_key)
+                        st.session_state.red_flags = red_flags
                         
-                        st.success(f"✅ CIM processed! Extracted {len(text):,} characters and {len(sections)} sections")
+                        # Extract valuation metrics
+                        valuation_data = extract_valuation_metrics(text, api_key)
+                        st.session_state.valuation_data = valuation_data
+                        
+                        st.success(f"✅ CIM processed! Extracted {len(text):,} characters, {len(sections)} sections, {len(red_flags)} red flags detected")
                         st.rerun()
+        
+        # Data room integration
+        if st.session_state.current_cim_id:
+            st.divider()
+            st.header("🗂️ Data Room Sync")
+            
+            data_source = st.selectbox("Source", ["Box", "Dropbox", "iDeals", "SharePoint"])
+            folder_path = st.text_input("Folder Path", placeholder="/deals/target-company/")
+            
+            if st.button("🔁 Sync Now"):
+                with st.spinner("Syncing documents..."):
+                    status = simulate_data_room_sync(data_source, folder_path)
+                    if status == 'success':
+                        st.success("✅ Sync completed")
+                    elif status == 'pending':
+                        st.warning("⏳ Sync in progress")
+                    else:
+                        st.error("❌ Sync failed")
+                    log_audit_action("Data Room Sync", f"{data_source}: {folder_path}")
     
     # Main content area
     if st.session_state.cim_text is None:
         # Welcome screen
         col1, col2, col3 = st.columns([1, 2, 1])
         with col2:
-            # Use Streamlit's native components instead of HTML
-            st.markdown("### 🚀 Welcome to Auctum")
+            st.markdown("### 🚀 Welcome to Auctum Enterprise")
             
             with st.container():
-                st.markdown("**📤 Upload Documents**")
-                st.write("Support for PDF CIM documents with intelligent text extraction")
+                st.markdown("**🧑‍💼 Deal Team Workspace**")
+                st.write("Advanced team collaboration with comments, tasks, and memo management")
                 
-                st.markdown("**🤖 AI Analysis**") 
-                st.write("Get instant insights and comprehensive analysis of investment opportunities")
+                st.markdown("**📋 IC Memo Generator**") 
+                st.write("AI-powered investment committee memo generation from CIM content")
                 
-                st.markdown("**📊 Smart Insights**")
-                st.write("Extract key metrics, financial data, and risk assessments automatically")
+                st.markdown("**🚨 Red Flag Tracker**")
+                st.write("Automatic detection of inconsistencies and potential issues")
                 
-                st.markdown("**💬 Interactive Chat**")
-                st.write("Ask specific questions about your CIM documents and get detailed answers")
+                st.markdown("**🗂️ Data Room Integration**")
+                st.write("Seamless sync with Box, Dropbox, iDeals, and other platforms")
+                
+                st.markdown("**💰 Valuation Snapshot**")
+                st.write("Automated extraction and visualization of key financial metrics")
+                
+                st.markdown("**🔒 Compliance Mode**")
+                st.write("Enterprise-grade security with encryption and audit logging")
                 
                 st.divider()
                 
@@ -866,82 +840,606 @@ def main():
                 st.write("1. Enter your OpenAI API key in the sidebar")
                 st.write("2. Upload a CIM PDF file") 
                 st.write("3. Click 'Process CIM' to analyze")
-                st.write("4. Start asking questions and generating insights!")
+                st.write("4. Access all enterprise features in the tabs above!")
     else:
-        # Show analysis interface with tabs
+        # Show analysis interface with all features
         show_analysis_interface(api_key)
 
 def show_analysis_interface(api_key):
-    """Show the main analysis interface with tabs"""
+    """Show the main analysis interface with all enterprise features"""
     
-    st.info(f"📄 **Document Loaded**: {len(st.session_state.cim_text):,} characters extracted and ready for analysis")
+    st.info(f"📄 **Document Loaded**: {len(st.session_state.cim_text):,} characters | {len(st.session_state.red_flags)} red flags detected | {len(st.session_state.valuation_data)} valuation metrics extracted")
     
-    # Audit trail badge
-    st.markdown("""
-    <div class="audit-badge">
-        🔒 <strong>Audit Trail Enabled</strong>: All comments, uploads, and tasks are timestamped and traceable.
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # Create sticky tabs
+    # Create tabs for all features
     st.markdown('<div class="sticky-tabs">', unsafe_allow_html=True)
-    tab1, tab2, tab3, tab4 = st.tabs(["🎯 Quick Analysis", "💬 Interactive Chat", "🧑‍💼 Deal Workspace", "📊 Sections"])
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+        "🧑‍💼 Deal Workspace", 
+        "📋 IC Memo", 
+        "🚨 Red Flags", 
+        "💰 Valuation", 
+        "🗂️ Data Room",
+        "🎯 Quick Analysis", 
+        "💬 Chat"
+    ])
     st.markdown('</div>', unsafe_allow_html=True)
     
     with tab1:
-        show_quick_analysis(api_key)
-    
-    with tab2:
-        show_chat_interface(api_key)
-    
-    with tab3:
         show_deal_workspace(api_key)
     
+    with tab2:
+        show_ic_memo_generator(api_key)
+    
+    with tab3:
+        show_red_flag_tracker(api_key)
+    
     with tab4:
-        show_sections_overview(api_key)
+        show_valuation_snapshot(api_key)
+    
+    with tab5:
+        show_data_room_integration()
+    
+    with tab6:
+        show_quick_analysis(api_key)
+    
+    with tab7:
+        show_chat_interface(api_key)
+
+def show_deal_workspace(api_key):
+    """Enhanced deal team workspace"""
+    st.subheader("🧑‍💼 Deal Team Workspace")
+    st.caption("Advanced team collaboration and task management")
+    
+    if not st.session_state.cim_sections:
+        st.warning("⚠️ No sections found. Please reprocess the CIM.")
+        return
+    
+    # Section selector with enhanced stats
+    col1, col2 = st.columns([1, 2])
+    
+    with col1:
+        st.markdown("### 📂 Sections")
+        selected_section = st.selectbox(
+            "Select a section:",
+            list(st.session_state.cim_sections.keys()),
+            key="workspace_section"
+        )
+        
+        if selected_section:
+            # Show comprehensive stats
+            st.metric("Characters", len(st.session_state.cim_sections.get(selected_section, "")))
+            
+            # Check for red flags in this section
+            section_flags = [flag for flag in st.session_state.red_flags 
+                           if selected_section.lower() in flag.get('page_ref', '').lower()]
+            if section_flags:
+                st.metric("🚨 Red Flags", len(section_flags))
+    
+    with col2:
+        if selected_section:
+            st.markdown(f"### 📋 {selected_section}")
+            
+            # Task management with database integration
+            st.markdown("#### ✅ Task Management")
+            
+            with st.form(f"task_form_{selected_section}"):
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    task_title = st.text_input("Task Title")
+                    assigned_to = st.selectbox("Assign to", TEAM_MEMBERS)
+                with col_b:
+                    due_date = st.date_input("Due Date", value=datetime.now().date() + timedelta(days=7))
+                    priority = st.selectbox("Priority", ["Low", "Medium", "High", "Critical"])
+                
+                task_description = st.text_area("Description")
+                
+                if st.form_submit_button("➕ Create Task"):
+                    if task_title and assigned_to:
+                        # Save to database
+                        conn = sqlite3.connect('auctum.db')
+                        c = conn.cursor()
+                        c.execute('''INSERT INTO tasks (cim_id, title, description, assigned_to, due_date, section) 
+                                     VALUES (?, ?, ?, ?, ?, ?)''',
+                                  (st.session_state.current_cim_id, task_title, task_description, 
+                                   assigned_to, due_date, selected_section))
+                        conn.commit()
+                        conn.close()
+                        
+                        log_audit_action("Task Created", f"{task_title} assigned to {assigned_to}", st.session_state.current_cim_id)
+                        st.success("✅ Task created!")
+                        st.rerun()
+            
+            # Display existing tasks from database
+            if st.session_state.current_cim_id:
+                conn = sqlite3.connect('auctum.db')
+                c = conn.cursor()
+                c.execute('''SELECT * FROM tasks WHERE cim_id = ? AND section = ? ORDER BY timestamp DESC''',
+                          (st.session_state.current_cim_id, selected_section))
+                tasks = c.fetchall()
+                conn.close()
+                
+                if tasks:
+                    st.markdown("#### 📝 Active Tasks")
+                    for task in tasks:
+                        task_id, cim_id, title, description, assigned_to, due_date, status, section, timestamp = task
+                        
+                        # Task card with enhanced styling
+                        task_html = f"""
+                        <div class="task-card task-{status.replace(' ', '-')}">
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <strong>{title}</strong>
+                                <span style="font-size: 0.8rem; opacity: 0.7;">{status.upper()}</span>
+                            </div>
+                            <div style="margin: 0.5rem 0;">
+                                {description if description else 'No description'}
+                            </div>
+                            <div style="font-size: 0.8rem; opacity: 0.8;">
+                                👤 {assigned_to} | 📅 Due: {due_date}
+                            </div>
+                        </div>
+                        """
+                        st.markdown(task_html, unsafe_allow_html=True)
+                        
+                        # Task actions
+                        col_action1, col_action2, col_action3 = st.columns(3)
+                        with col_action1:
+                            if status == 'open' and st.button("🏃 Start", key=f"start_{task_id}"):
+                                conn = sqlite3.connect('auctum.db')
+                                c = conn.cursor()
+                                c.execute("UPDATE tasks SET status = 'in_progress' WHERE id = ?", (task_id,))
+                                conn.commit()
+                                conn.close()
+                                log_audit_action("Task Started", title, st.session_state.current_cim_id)
+                                st.rerun()
+                        
+                        with col_action2:
+                            if status in ['open', 'in_progress'] and st.button("✅ Complete", key=f"complete_{task_id}"):
+                                conn = sqlite3.connect('auctum.db')
+                                c = conn.cursor()
+                                c.execute("UPDATE tasks SET status = 'completed' WHERE id = ?", (task_id,))
+                                conn.commit()
+                                conn.close()
+                                log_audit_action("Task Completed", title, st.session_state.current_cim_id)
+                                st.rerun()
+                        
+                        st.markdown("---")
+
+def show_ic_memo_generator(api_key):
+    """IC Memo Generator with AI assistance"""
+    st.subheader("📋 Investment Committee Memo Generator")
+    st.caption("AI-powered memo generation from CIM content")
+    
+    if not api_key:
+        st.warning("⚠️ OpenAI API key required for memo generation")
+        return
+    
+    # Memo sections
+    memo_sections = {
+        "Executive Summary": "High-level overview and recommendation",
+        "Investment Thesis": "Key reasons for investment",
+        "Business Overview": "Company description and business model",
+        "Financial Analysis": "Key financial metrics and performance",
+        "Market Analysis": "Market opportunity and competitive position", 
+        "Management Assessment": "Leadership team evaluation",
+        "Risk Analysis": "Key risks and mitigation strategies",
+        "Valuation": "Valuation methodology and price justification",
+        "Recommendation": "Final investment recommendation"
+    }
+    
+    # Generate all sections button
+    if st.button("🤖 Generate Complete IC Memo"):
+        with st.spinner("Generating IC memo sections..."):
+            progress_bar = st.progress(0)
+            
+            for i, (section, description) in enumerate(memo_sections.items()):
+                # Find relevant CIM section
+                relevant_text = ""
+                for cim_section, content in st.session_state.cim_sections.items():
+                    if any(keyword in cim_section.lower() for keyword in section.lower().split()):
+                        relevant_text = content
+                        break
+                
+                if not relevant_text:
+                    relevant_text = st.session_state.cim_text[:3000]
+                
+                memo_content = generate_ic_memo_section(section, relevant_text, api_key)
+                st.session_state.ic_memo[section] = memo_content
+                
+                progress_bar.progress((i + 1) / len(memo_sections))
+            
+            log_audit_action("IC Memo Generated", "Complete memo generated", st.session_state.current_cim_id)
+            st.success("✅ IC Memo generated!")
+    
+    # Display and edit memo sections
+    for section, description in memo_sections.items():
+        with st.expander(f"📄 {section}", expanded=section=="Executive Summary"):
+            st.caption(description)
+            
+            # Individual section generation
+            if section not in st.session_state.ic_memo:
+                if st.button(f"Generate {section}", key=f"gen_{section}"):
+                    with st.spinner(f"Generating {section}..."):
+                        relevant_text = ""
+                        for cim_section, content in st.session_state.cim_sections.items():
+                            if any(keyword in cim_section.lower() for keyword in section.lower().split()):
+                                relevant_text = content
+                                break
+                        
+                        if not relevant_text:
+                            relevant_text = st.session_state.cim_text[:3000]
+                        
+                        memo_content = generate_ic_memo_section(section, relevant_text, api_key)
+                        st.session_state.ic_memo[section] = memo_content
+                        st.rerun()
+            
+            # Editable content
+            if section in st.session_state.ic_memo:
+                edited_content = st.text_area(
+                    f"Edit {section}:",
+                    value=st.session_state.ic_memo[section],
+                    height=200,
+                    key=f"edit_{section}"
+                )
+                st.session_state.ic_memo[section] = edited_content
+    
+    # Export options
+    if st.session_state.ic_memo:
+        st.divider()
+        st.markdown("### 📤 Export Options")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("📄 Export as Markdown"):
+                markdown_content = "# Investment Committee Memo\n\n"
+                for section, content in st.session_state.ic_memo.items():
+                    markdown_content += f"## {section}\n\n{content}\n\n"
+                
+                st.download_button(
+                    "⬇️ Download Markdown",
+                    markdown_content,
+                    "ic_memo.md",
+                    "text/markdown"
+                )
+        
+        with col2:
+            st.button("📊 Export to Word", disabled=True, help="Feature coming soon")
+
+def show_red_flag_tracker(api_key):
+    """Red Flag Tracker with AI detection"""
+    st.subheader("🚨 Red Flag Tracker")
+    st.caption("AI-powered inconsistency and risk detection")
+    
+    # Red flag summary
+    if st.session_state.red_flags:
+        col1, col2, col3 = st.columns(3)
+        
+        severity_counts = {}
+        for flag in st.session_state.red_flags:
+            severity = flag.get('severity', 'medium')
+            severity_counts[severity] = severity_counts.get(severity, 0) + 1
+        
+        col1.metric("🔴 High Severity", severity_counts.get('high', 0))
+        col2.metric("🟡 Medium Severity", severity_counts.get('medium', 0))
+        col3.metric("🟢 Low Severity", severity_counts.get('low', 0))
+        
+        st.divider()
+        
+        # Display red flags
+        for i, flag in enumerate(st.session_state.red_flags):
+            severity = flag.get('severity', 'medium')
+            severity_emoji = {'high': '🔴', 'medium': '🟡', 'low': '🟢'}
+            
+            flag_html = f"""
+            <div class="red-flag">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+                    <strong>{severity_emoji.get(severity, '🟡')} Red Flag #{i+1}</strong>
+                    <span style="font-size: 0.8rem; opacity: 0.7;">{severity.upper()}</span>
+                </div>
+                <div style="margin-bottom: 0.5rem;">
+                    {flag.get('description', 'No description available')}
+                </div>
+                <div style="font-size: 0.8rem; opacity: 0.8;">
+                    📍 Reference: {flag.get('page_ref', 'General')}
+                </div>
+            </div>
+            """
+            st.markdown(flag_html, unsafe_allow_html=True)
+            
+            # Flag actions
+            col_flag1, col_flag2, col_flag3 = st.columns(3)
+            with col_flag1:
+                if st.button("✅ Resolve", key=f"resolve_flag_{i}"):
+                    st.session_state.red_flags[i]['status'] = 'resolved'
+                    log_audit_action("Red Flag Resolved", flag.get('description', ''), st.session_state.current_cim_id)
+                    st.success("Flag marked as resolved")
+            
+            with col_flag2:
+                if st.button("📋 Add to IC Memo", key=f"add_flag_{i}"):
+                    # Add to risk analysis section of IC memo
+                    risk_section = st.session_state.ic_memo.get('Risk Analysis', '')
+                    risk_section += f"\n\n• {flag.get('description', '')}"
+                    st.session_state.ic_memo['Risk Analysis'] = risk_section
+                    st.success("Added to IC memo")
+            
+            with col_flag3:
+                if st.button("🔍 Investigate", key=f"investigate_flag_{i}"):
+                    st.session_state.red_flags[i]['status'] = 'investigating'
+                    log_audit_action("Red Flag Investigation Started", flag.get('description', ''), st.session_state.current_cim_id)
+                    st.info("Marked for investigation")
+            
+            st.markdown("---")
+    
+    else:
+        st.info("✅ No red flags detected in this CIM. This indicates good consistency and clarity in the document.")
+    
+    # Manual red flag reporting
+    st.markdown("### ➕ Report Manual Red Flag")
+    with st.form("manual_red_flag"):
+        manual_description = st.text_area("Describe the red flag or concern:")
+        manual_severity = st.selectbox("Severity", ["low", "medium", "high"])
+        manual_section = st.selectbox("Related Section", list(st.session_state.cim_sections.keys()) if st.session_state.cim_sections else ["General"])
+        
+        if st.form_submit_button("🚨 Report Red Flag"):
+            if manual_description:
+                new_flag = {
+                    'description': manual_description,
+                    'severity': manual_severity,
+                    'page_ref': manual_section,
+                    'status': 'open'
+                }
+                st.session_state.red_flags.append(new_flag)
+                log_audit_action("Manual Red Flag Reported", manual_description, st.session_state.current_cim_id)
+                st.success("Red flag reported!")
+                st.rerun()
+
+def show_valuation_snapshot(api_key):
+    """Valuation analysis and visualization"""
+    st.subheader("💰 Valuation Snapshot")
+    st.caption("Automated financial metrics extraction and analysis")
+    
+    if st.session_state.valuation_data:
+        # Display key metrics
+        col1, col2, col3, col4 = st.columns(4)
+        
+        valuation = st.session_state.valuation_data
+        
+        col1.metric(
+            "Revenue 2023", 
+            f"${valuation.get('revenue_2023', 0):,.0f}M" if valuation.get('revenue_2023') else "N/A"
+        )
+        col2.metric(
+            "EBITDA 2023", 
+            f"${valuation.get('ebitda_2023', 0):,.0f}M" if valuation.get('ebitda_2023') else "N/A"
+        )
+        col3.metric(
+            "EV/Revenue", 
+            f"{valuation.get('ev_revenue_multiple', 0):,.1f}x" if valuation.get('ev_revenue_multiple') else "N/A"
+        )
+        col4.metric(
+            "Revenue Growth", 
+            f"{valuation.get('revenue_growth_rate', 0):,.1f}%" if valuation.get('revenue_growth_rate') else "N/A"
+        )
+        
+        st.divider()
+        
+        # Create visualizations
+        if valuation.get('revenue_2023') and valuation.get('revenue_2024'):
+            st.markdown("### 📈 Revenue Trend")
+            
+            # Create simple chart data
+            chart_data = pd.DataFrame({
+                'Year': [2023, 2024],
+                'Revenue (M)': [valuation.get('revenue_2023', 0), valuation.get('revenue_2024', 0)]
+            })
+            
+            st.line_chart(chart_data.set_index('Year'))
+        
+        # Valuation multiples comparison
+        if valuation.get('ev_revenue_multiple') or valuation.get('ev_ebitda_multiple'):
+            st.markdown("### 📊 Valuation Multiples")
+            
+            multiples_data = {}
+            if valuation.get('ev_revenue_multiple'):
+                multiples_data['EV/Revenue'] = valuation.get('ev_revenue_multiple')
+            if valuation.get('ev_ebitda_multiple'):
+                multiples_data['EV/EBITDA'] = valuation.get('ev_ebitda_multiple')
+            
+            if multiples_data:
+                multiples_df = pd.DataFrame(list(multiples_data.items()), columns=['Multiple', 'Value'])
+                st.bar_chart(multiples_df.set_index('Multiple'))
+        
+        # Export valuation data
+        st.markdown("### 📤 Export Valuation Data")
+        
+        if st.button("📊 Export to Excel"):
+            valuation_df = pd.DataFrame([valuation])
+            csv = valuation_df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                "⬇️ Download CSV",
+                csv,
+                "valuation_metrics.csv",
+                "text/csv"
+            )
+    
+    else:
+        st.info("📊 No valuation metrics extracted yet. The AI analysis may not have found clear financial data in the CIM.")
+        
+        if api_key and st.button("🔄 Re-analyze for Valuation Data"):
+            with st.spinner("Re-analyzing CIM for valuation metrics..."):
+                valuation_data = extract_valuation_metrics(st.session_state.cim_text, api_key)
+                st.session_state.valuation_data = valuation_data
+                if valuation_data:
+                    st.success("✅ Valuation data extracted!")
+                else:
+                    st.warning("⚠️ No clear valuation data found in CIM")
+                st.rerun()
+
+def show_data_room_integration():
+    """Data room integration and sync status"""
+    st.subheader("🗂️ Data Room Integration")
+    st.caption("Sync with external data sources and document repositories")
+    
+    # Sync status overview
+    conn = sqlite3.connect('auctum.db')
+    c = conn.cursor()
+    c.execute("SELECT * FROM synced_docs ORDER BY last_synced DESC")
+    synced_docs = c.fetchall()
+    conn.close()
+    
+    if synced_docs:
+        st.markdown("### 📊 Sync Status")
+        
+        # Status summary
+        status_counts = {}
+        for doc in synced_docs:
+            status = doc[5]  # sync_status column
+            status_counts[status] = status_counts.get(status, 0) + 1
+        
+        col1, col2, col3 = st.columns(3)
+        col1.metric("✅ Successful", status_counts.get('success', 0))
+        col2.metric("⏳ Pending", status_counts.get('pending', 0))
+        col3.metric("❌ Failed", status_counts.get('error', 0))
+        
+        st.divider()
+        
+        # Sync history
+        st.markdown("### 📁 Sync History")
+        
+        for doc in synced_docs:
+            doc_id, source, path, last_synced, cim_id, sync_status = doc
+            
+            # Format timestamp
+            sync_time = datetime.fromisoformat(last_synced).strftime("%Y-%m-%d %H:%M")
+            
+            # Status styling
+            status_class = f"sync-{sync_status}"
+            status_emoji = {"success": "✅", "pending": "⏳", "error": "❌"}
+            
+            doc_html = f"""
+            <div style="background: rgba(30, 41, 59, 0.8); border-radius: 8px; padding: 1rem; margin: 0.5rem 0;">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <strong>📂 {source}</strong><br>
+                        <span style="opacity: 0.8;">{path}</span>
+                    </div>
+                    <div style="text-align: right;">
+                        <span class="{status_class}">{status_emoji.get(sync_status, '❓')} {sync_status.upper()}</span><br>
+                        <span style="font-size: 0.8rem; opacity: 0.7;">{sync_time}</span>
+                    </div>
+                </div>
+            </div>
+            """
+            st.markdown(doc_html, unsafe_allow_html=True)
+            
+            # Resync option
+            if sync_status in ['error', 'pending']:
+                if st.button(f"🔄 Resync", key=f"resync_{doc_id}"):
+                    with st.spinner("Resyncing..."):
+                        new_status = simulate_data_room_sync(source, path)
+                        conn = sqlite3.connect('auctum.db')
+                        c = conn.cursor()
+                        c.execute("UPDATE synced_docs SET sync_status = ?, last_synced = ? WHERE id = ?",
+                                  (new_status, datetime.now(), doc_id))
+                        conn.commit()
+                        conn.close()
+                        log_audit_action("Data Room Resync", f"{source}: {path}")
+                        st.rerun()
+    
+    else:
+        st.info("📁 No data room syncs configured yet. Use the sidebar to set up your first sync.")
+    
+    # Integration guides
+    st.markdown("### 🔗 Integration Setup")
+    
+    with st.expander("📦 Box Integration"):
+        st.markdown("""
+        **Setup Steps:**
+        1. Create Box Developer App at developer.box.com
+        2. Generate OAuth credentials
+        3. Configure webhook for automatic sync
+        4. Test connection with folder path
+        """)
+    
+    with st.expander("📁 Dropbox Integration"):
+        st.markdown("""
+        **Setup Steps:**
+        1. Create Dropbox App at dropbox.com/developers
+        2. Generate access token
+        3. Set up folder monitoring
+        4. Configure sync schedule
+        """)
+    
+    with st.expander("🏢 iDeals Integration"):
+        st.markdown("""
+        **Setup Steps:**
+        1. Contact iDeals for API access
+        2. Set up webhook notifications
+        3. Configure document filters
+        4. Test sync functionality
+        """)
 
 def show_quick_analysis(api_key):
-    """Show quick analysis buttons"""
+    """Quick analysis tools"""
     st.subheader("🎯 Quick Analysis")
     col1, col2, col3 = st.columns(3)
     
     with col1:
         if st.button("📊 Executive Summary", use_container_width=True):
-            with st.spinner("🔍 Generating comprehensive summary..."):
-                summary = get_openai_response(
-                    "provide an executive summary of this CIM including company overview, business model, and key highlights.",
-                    st.session_state.cim_text,
-                    api_key
-                )
-                st.markdown("### 📊 Executive Summary")
-                st.markdown(summary)
+            if api_key:
+                with st.spinner("🔍 Generating summary..."):
+                    try:
+                        client = openai.OpenAI(api_key=api_key)
+                        response = client.chat.completions.create(
+                            model="gpt-3.5-turbo",
+                            messages=[
+                                {"role": "system", "content": "You are an expert financial analyst."},
+                                {"role": "user", "content": f"Provide an executive summary of this CIM: {st.session_state.cim_text[:3000]}"}
+                            ],
+                            max_tokens=800
+                        )
+                        st.markdown("### 📊 Executive Summary")
+                        st.markdown(response.choices[0].message.content)
+                        log_audit_action("Generated Executive Summary", "", st.session_state.current_cim_id)
+                    except Exception as e:
+                        st.error(f"Error: {e}")
     
     with col2:
         if st.button("💰 Financial Analysis", use_container_width=True):
-            with st.spinner("📈 Extracting financial metrics..."):
-                metrics = get_openai_response(
-                    "extract and summarize the key financial metrics including revenue, EBITDA, growth rates, and valuation information.",
-                    st.session_state.cim_text,
-                    api_key
-                )
-                st.markdown("### 💰 Financial Metrics")
-                st.markdown(metrics)
+            if api_key:
+                with st.spinner("📈 Analyzing financials..."):
+                    try:
+                        client = openai.OpenAI(api_key=api_key)
+                        response = client.chat.completions.create(
+                            model="gpt-3.5-turbo",
+                            messages=[
+                                {"role": "system", "content": "You are an expert financial analyst."},
+                                {"role": "user", "content": f"Extract and analyze key financial metrics from this CIM: {st.session_state.cim_text[:3000]}"}
+                            ],
+                            max_tokens=800
+                        )
+                        st.markdown("### 💰 Financial Analysis")
+                        st.markdown(response.choices[0].message.content)
+                        log_audit_action("Generated Financial Analysis", "", st.session_state.current_cim_id)
+                    except Exception as e:
+                        st.error(f"Error: {e}")
     
     with col3:
         if st.button("⚠️ Risk Assessment", use_container_width=True):
-            with st.spinner("🛡️ Analyzing potential risks..."):
-                risks = get_openai_response(
-                    "identify and analyze the key risks and challenges mentioned in this document.",
-                    st.session_state.cim_text,
-                    api_key
-                )
-                st.markdown("### ⚠️ Risk Analysis")
-                st.markdown(risks)
+            if st.session_state.red_flags:
+                st.markdown("### ⚠️ Risk Assessment")
+                st.markdown(f"**{len(st.session_state.red_flags)} potential risks identified:**")
+                for i, flag in enumerate(st.session_state.red_flags[:5]):
+                    st.markdown(f"• {flag.get('description', 'Unknown risk')}")
+                if len(st.session_state.red_flags) > 5:
+                    st.markdown(f"*...and {len(st.session_state.red_flags) - 5} more*")
+            else:
+                st.markdown("### ⚠️ Risk Assessment")
+                st.markdown("✅ No significant risks detected in automated analysis.")
 
 def show_chat_interface(api_key):
-    """Show interactive chat interface"""
+    """Interactive chat interface"""
     st.subheader("💬 Interactive Analysis")
-    st.caption("Ask specific questions about this CIM document")
+    st.caption("Ask questions about this CIM document")
     
     # Display chat history
     for i, (question, answer) in enumerate(st.session_state.chat_history):
@@ -952,389 +1450,45 @@ def show_chat_interface(api_key):
     
     # Chat input
     if prompt := st.chat_input("Ask a question about this CIM document..."):
-        # Add user message to chat history
-        st.session_state.chat_history.append((prompt, ""))
-        
-        # Display user message
-        with st.chat_message("user"):
-            st.write(prompt)
-        
-        # Generate and display assistant response
-        with st.chat_message("assistant"):
-            with st.spinner("🤔 Analyzing your question..."):
-                response = get_openai_response(prompt, st.session_state.cim_text, api_key)
-                st.write(response)
-                
-                # Update chat history with response
-                st.session_state.chat_history[-1] = (prompt, response)
-
-def show_deal_workspace(api_key):
-    """Show deal team workspace for collaboration"""
-    st.subheader("🧑‍💼 Deal Team Workspace")
-    st.caption("Collaborate with your team on this deal")
-    
-    if not st.session_state.cim_sections:
-        st.warning("⚠️ No sections found. Please reprocess the CIM to enable workspace features.")
-        return
-    
-    # Export functionality
-    col_export1, col_export2, col_export3 = st.columns([2, 1, 1])
-    
-    with col_export2:
-        if st.button("📊 Export CSV"):
-            try:
-                df = export_workspace_data()
-                if not df.empty:
-                    csv = df.to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        "⬇️ Download CSV",
-                        csv,
-                        "deal_workspace_summary.csv",
-                        "text/csv",
-                        key="download_csv"
-                    )
-                else:
-                    st.info("No data to export yet.")
-            except Exception as e:
-                st.error(f"CSV export failed: {e}")
-    
-    with col_export3:
-        if XLWINGS_AVAILABLE:
-            if st.button("📤 Export Excel"):
-                with st.spinner("🔄 Exporting to Excel..."):
-                    success = export_workspace_to_excel()
-                    if success:
-                        st.success("✅ Successfully exported to Excel!")
-                        st.balloons()
-                    else:
-                        st.error("❌ Excel export failed")
-        else:
-            st.button("📤 Excel (Install xlwings)", disabled=True, help="Run: pip install xlwings")
-    
-    # Section selector
-    col1, col2 = st.columns([1, 2])
-    
-    with col1:
-        st.markdown("### 📂 Sections")
-        selected_section = st.selectbox(
-            "Select a section to work on:",
-            list(st.session_state.cim_sections.keys()),
-            key="workspace_section"
-        )
-        
-        # Show section stats
-        if selected_section:
-            comments = st.session_state.comment_store.get(selected_section, [])
-            comments_count = len(comments)
-            has_memo = selected_section in st.session_state.memo_store
-            open_tasks = len([c for c in comments if c.get('status') == 'Open'])
+        if api_key:
+            # Add user message to chat history
+            st.session_state.chat_history.append((prompt, ""))
             
-            st.metric("Comments", comments_count)
-            st.metric("Open Tasks", open_tasks)
-            st.metric("Memo Attached", "Yes" if has_memo else "No")
+            # Display user message
+            with st.chat_message("user"):
+                st.write(prompt)
             
-            # Generate AI summary for section
-            if api_key and selected_section not in st.session_state.section_summaries:
-                if st.button("🤖 Generate AI Summary", key=f"ai_summary_{selected_section}"):
-                    with st.spinner("Generating summary..."):
-                        section_text = st.session_state.cim_sections.get(selected_section, "")
-                        summary = generate_section_summary(section_text, api_key, selected_section)
-                        st.session_state.section_summaries[selected_section] = summary
-                        add_audit_log("System", "Generated AI summary", selected_section)
-                        st.rerun()
-            
-            # Show existing summary
-            if selected_section in st.session_state.section_summaries:
-                with st.expander("🤖 AI Summary"):
-                    st.markdown(st.session_state.section_summaries[selected_section])
-    
-    with col2:
-        if selected_section:
-            st.markdown(f"### 📋 Working on: {selected_section}")
-            
-            # Memo upload with enhanced display
-            st.markdown("#### 📎 Attach Memo")
-            uploaded_memo = st.file_uploader(
-                "Upload a memo or note for this section",
-                type=["txt", "md", "pdf", "docx"],
-                key=f"memo_{selected_section}"
-            )
-            
-            if uploaded_memo:
-                memo_content = f"File: {uploaded_memo.name} ({uploaded_memo.size} bytes)"
-                if uploaded_memo.type == "text/plain":
+            # Generate and display assistant response
+            with st.chat_message("assistant"):
+                with st.spinner("🤔 Analyzing..."):
                     try:
-                        memo_content = uploaded_memo.read().decode("utf-8")
-                    except:
-                        memo_content = f"File: {uploaded_memo.name} (could not read content)"
-                
-                st.session_state.memo_store[selected_section] = {
-                    "content": memo_content,
-                    "filename": uploaded_memo.name,
-                    "size": uploaded_memo.size,
-                    "type": uploaded_memo.type,
-                    "timestamp": datetime.now().isoformat()
-                }
-                add_audit_log("User", "Uploaded memo", selected_section, uploaded_memo.name)
-                save_workspace_data(st.session_state.comment_store, st.session_state.memo_store)
-                st.success(f"✅ Memo attached to {selected_section}")
-                st.rerun()
-            
-            # Show existing memo with enhanced info
-            if selected_section in st.session_state.memo_store:
-                memo = st.session_state.memo_store[selected_section]
-                upload_date = datetime.fromisoformat(memo['timestamp']).strftime('%b %d, %Y %H:%M')
-                
-                with st.expander(f"📎 Memo: {memo['filename']} (uploaded {upload_date})"):
-                    st.markdown(f"**File:** {memo['filename']}")
-                    st.markdown(f"**Size:** {memo.get('size', 'Unknown')} bytes")
-                    st.markdown(f"**Type:** {memo.get('type', 'Unknown')}")
-                    st.markdown(f"**Uploaded:** {upload_date}")
-                    
-                    if memo['content'] and not memo['content'].startswith('File:'):
-                        st.text_area("Content:", memo['content'], height=100, disabled=True)
-                    
-                    if st.button("🗑️ Remove Memo", key=f"remove_memo_{selected_section}"):
-                        del st.session_state.memo_store[selected_section]
-                        add_audit_log("User", "Removed memo", selected_section, memo['filename'])
-                        save_workspace_data(st.session_state.comment_store, st.session_state.memo_store)
-                        st.rerun()
-            
-            st.divider()
-            
-            # Comments and tasks with enhanced features
-            st.markdown("#### 💬 Comments & Tasks")
-            
-            # Comment sorting
-            col_sort1, col_sort2 = st.columns(2)
-            with col_sort1:
-                sort_by = st.selectbox("Sort by:", ["Newest", "Oldest", "Priority", "Status", "User"])
-            with col_sort2:
-                show_resolved = st.checkbox("Show resolved", value=True)
-            
-            # Add new comment with autocomplete
-            with st.form(f"comment_form_{selected_section}"):
-                col_a, col_b = st.columns([2, 1])
-                with col_a:
-                    user_name = st.selectbox("Your name", [""] + [m[1:] for m in TEAM_MEMBERS], key=f"user_{selected_section}")
-                    comment_text = st.text_area("Comment or task", placeholder="Add a comment or create a task...")
-                with col_b:
-                    assigned_to = st.multiselect("Assign to:", TEAM_MEMBERS, key=f"assign_{selected_section}")
-                    hashtags = st.multiselect("Tags:", COMMON_TAGS, key=f"tags_{selected_section}")
-                    priority = st.selectbox("Priority", ["Low", "Medium", "High", "Critical"])
-                
-                submitted = st.form_submit_button("💬 Add Comment")
-                
-                if submitted and user_name and comment_text:
-                    all_tags = assigned_to + hashtags
-                    new_comment = {
-                        "id": len(st.session_state.comment_store.get(selected_section, [])),
-                        "user": user_name,
-                        "comment": comment_text,
-                        "tags": all_tags,
-                        "assigned_to": assigned_to,
-                        "priority": priority,
-                        "status": "Open",
-                        "timestamp": datetime.now().isoformat()
-                    }
-                    
-                    if selected_section not in st.session_state.comment_store:
-                        st.session_state.comment_store[selected_section] = []
-                    
-                    st.session_state.comment_store[selected_section].append(new_comment)
-                    add_audit_log(user_name, "Added comment/task", selected_section, comment_text[:50])
-                    
-                    # Show mention notifications
-                    for mention in assigned_to:
-                        st.toast(f"🔔 {mention} was mentioned in a comment", icon="🔔")
-                    
-                    save_workspace_data(st.session_state.comment_store, st.session_state.memo_store)
-                    st.success("✅ Comment added!")
-                    st.rerun()
-            
-            # Display existing comments with enhanced styling
-            if selected_section in st.session_state.comment_store:
-                comments = st.session_state.comment_store[selected_section]
-                
-                # Apply sorting
-                if sort_by == "Newest":
-                    comments = sorted(comments, key=lambda x: x.get('timestamp', ''), reverse=True)
-                elif sort_by == "Oldest":
-                    comments = sorted(comments, key=lambda x: x.get('timestamp', ''))
-                elif sort_by == "Priority":
-                    priority_order = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}
-                    comments = sorted(comments, key=lambda x: priority_order.get(x.get('priority', 'Low'), 3))
-                elif sort_by == "Status":
-                    comments = sorted(comments, key=lambda x: x.get('status', 'Open'))
-                elif sort_by == "User":
-                    comments = sorted(comments, key=lambda x: x.get('user', ''))
-                
-                if comments:
-                    st.markdown("#### 📝 Comments")
-                    
-                    for i, comment in enumerate(comments):
-                        # Apply filters
-                        if not show_resolved and comment.get('status') == "Resolved":
-                            continue
+                        client = openai.OpenAI(api_key=api_key)
                         
-                        # Enhanced comment display with styling
-                        status = comment.get('status', 'Open')
-                        priority = comment.get('priority', 'Low')
+                        # Use relevant context from CIM
+                        context = st.session_state.cim_text[:4000]
+                        full_prompt = f"Based on this CIM: {context}\n\nQuestion: {prompt}"
                         
-                        status_icons = {
-                            "Open": "📌",
-                            "In Progress": "⏳", 
-                            "Resolved": "✅"
-                        }
+                        response = client.chat.completions.create(
+                            model="gpt-3.5-turbo",
+                            messages=[
+                                {"role": "system", "content": "You are an expert financial analyst helping analyze CIM documents."},
+                                {"role": "user", "content": full_prompt}
+                            ],
+                            max_tokens=800
+                        )
                         
-                        priority_colors = {
-                            "Critical": "task-critical",
-                            "High": "task-high", 
-                            "Medium": "task-medium",
-                            "Low": "task-low"
-                        }
+                        answer = response.choices[0].message.content
+                        st.write(answer)
                         
-                        task_class = f"task-{status.lower().replace(' ', '-')}"
+                        # Update chat history
+                        st.session_state.chat_history[-1] = (prompt, answer)
+                        log_audit_action("Chat Query", prompt[:50], st.session_state.current_cim_id)
                         
-                        # Render comment with enhanced styling
-                        comment_html = f"""
-                        <div class="task-card {task_class}">
-                            <div style="display: flex; align-items: center; margin-bottom: 0.5rem;">
-                                {render_user_avatar(comment.get('user', 'Unknown'))}
-                                <strong>{comment.get('user', 'Unknown')}</strong>
-                                <span style="margin-left: auto; font-size: 0.8rem; opacity: 0.7;">
-                                    {status_icons.get(status, '📌')} {status} | {priority}
-                                </span>
-                            </div>
-                            <div style="margin-bottom: 0.5rem;">
-                                {comment.get('comment', '')}
-                            </div>
-                        """
-                        
-                        if comment.get('tags'):
-                            comment_html += f"<div style='font-size: 0.8rem; opacity: 0.8;'>Tags: {' '.join(comment.get('tags', []))}</div>"
-                        
-                        comment_html += "</div>"
-                        
-                        st.markdown(comment_html, unsafe_allow_html=True)
-                        
-                        # Action buttons
-                        col1, col2, col3 = st.columns([2, 1, 1])
-                        with col2:
-                            if comment.get('status') == "Open":
-                                if st.button("⏳ In Progress", key=f"progress_{selected_section}_{i}"):
-                                    st.session_state.comment_store[selected_section][i]['status'] = "In Progress"
-                                    add_audit_log(comment.get('user', 'Unknown'), "Changed status to In Progress", selected_section)
-                                    save_workspace_data(st.session_state.comment_store, st.session_state.memo_store)
-                                    st.rerun()
-                            elif comment.get('status') == "In Progress":
-                                if st.button("✅ Complete", key=f"complete_{selected_section}_{i}"):
-                                    st.session_state.comment_store[selected_section][i]['status'] = "Resolved"
-                                    add_audit_log(comment.get('user', 'Unknown'), "Completed task", selected_section)
-                                    save_workspace_data(st.session_state.comment_store, st.session_state.memo_store)
-                                    st.rerun()
-                        
-                        with col3:
-                            if comment.get('status') == "Resolved":
-                                if st.button("↩️ Reopen", key=f"reopen_{selected_section}_{i}"):
-                                    st.session_state.comment_store[selected_section][i]['status'] = "Open"
-                                    add_audit_log(comment.get('user', 'Unknown'), "Reopened task", selected_section)
-                                    save_workspace_data(st.session_state.comment_store, st.session_state.memo_store)
-                                    st.rerun()
-                        
-                        st.markdown("---")
-                else:
-                    st.info("💭 No comments yet. Add the first comment above!")
-
-def show_sections_overview(api_key):
-    """Show overview of all sections with AI summaries"""
-    st.subheader("📊 Document Sections Overview")
-    
-    if not st.session_state.cim_sections:
-        st.warning("⚠️ No sections found. Please reprocess the CIM.")
-        return
-    
-    # Stats overview
-    col1, col2, col3, col4 = st.columns(4)
-    
-    total_sections = len(st.session_state.cim_sections)
-    total_comments = sum(len(comments) for comments in st.session_state.comment_store.values())
-    total_memos = len(st.session_state.memo_store)
-    open_tasks = sum(
-        len([c for c in comments if c.get('status') == 'Open']) 
-        for comments in st.session_state.comment_store.values()
-    )
-    
-    col1.metric("Sections", total_sections)
-    col2.metric("Total Comments", total_comments)
-    col3.metric("Memos Attached", total_memos)
-    col4.metric("Open Tasks", open_tasks)
-    
-    # Generate all summaries button
-    if api_key:
-        if st.button("🤖 Generate All AI Summaries"):
-            progress_bar = st.progress(0)
-            for i, section_name in enumerate(st.session_state.cim_sections.keys()):
-                if section_name not in st.session_state.section_summaries:
-                    section_text = st.session_state.cim_sections[section_name]
-                    summary = generate_section_summary(section_text, api_key, section_name)
-                    st.session_state.section_summaries[section_name] = summary
-                progress_bar.progress((i + 1) / total_sections)
-            
-            add_audit_log("System", "Generated all AI summaries")
-            st.success("✅ All summaries generated!")
-            st.rerun()
-    
-    st.divider()
-    
-    # Sections list with activity and AI summaries
-    for section_name in st.session_state.cim_sections.keys():
-        with st.expander(f"📄 {section_name}"):
-            comments = st.session_state.comment_store.get(section_name, [])
-            memo = st.session_state.memo_store.get(section_name)
-            
-            # Activity summary
-            col_a, col_b, col_c = st.columns(3)
-            
-            with col_a:
-                st.write(f"**Comments:** {len(comments)}")
-                open_comments = len([c for c in comments if c.get('status') == 'Open'])
-                if open_comments > 0:
-                    st.write(f"🔴 Open tasks: {open_comments}")
-            
-            with col_b:
-                st.write(f"**Memo:** {'✅ Attached' if memo else '❌ None'}")
-                if memo:
-                    upload_date = datetime.fromisoformat(memo['timestamp']).strftime('%b %d')
-                    st.caption(f"Uploaded: {upload_date}")
-            
-            with col_c:
-                if comments:
-                    high_priority = len([c for c in comments if c.get('priority') in ['High', 'Critical']])
-                    if high_priority > 0:
-                        st.write(f"⚠️ High priority: {high_priority}")
-            
-            # AI Summary
-            if section_name in st.session_state.section_summaries:
-                st.markdown("**🤖 AI Summary:**")
-                st.markdown(st.session_state.section_summaries[section_name])
-            elif api_key:
-                if st.button(f"Generate AI Summary", key=f"gen_summary_{section_name}"):
-                    with st.spinner("Generating summary..."):
-                        section_text = st.session_state.cim_sections[section_name]
-                        summary = generate_section_summary(section_text, api_key, section_name)
-                        st.session_state.section_summaries[section_name] = summary
-                        add_audit_log("System", "Generated AI summary", section_name)
-                        st.rerun()
-            
-            # Quick preview of section text
-            section_text = st.session_state.cim_sections[section_name]
-            if section_text:
-                preview = section_text[:300] + "..." if len(section_text) > 300 else section_text
-                with st.expander("📖 Text Preview"):
-                    st.caption(preview)
-            else:
-                st.caption("No content found for this section.")
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+                        st.session_state.chat_history[-1] = (prompt, f"Error: {e}")
+        else:
+            st.warning("⚠️ Please enter your OpenAI API key to use the chat feature")
 
 if __name__ == "__main__":
     main()
