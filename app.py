@@ -1,5 +1,3 @@
-from dotenv import load_dotenv
-load_dotenv()
 import streamlit as st
 import PyPDF2
 import openai
@@ -13,7 +11,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Enhanced CSS with particles and modern styling
+# Enhanced CSS with animated background and modern styling
 st.markdown("""
 <style>
     /* Hide Streamlit branding and header */
@@ -25,35 +23,59 @@ st.markdown("""
         display: none;
     }
     
+    /* Animated background */
+    .stApp {
+        background: linear-gradient(-45deg, #ee7752, #e73c7e, #23a6d5, #23d5ab);
+        background-size: 400% 400%;
+        animation: gradientBG 15s ease infinite;
+    }
+    
+    @keyframes gradientBG {
+        0% {
+            background-position: 0% 50%;
+        }
+        50% {
+            background-position: 100% 50%;
+        }
+        100% {
+            background-position: 0% 50%;
+        }
+    }
+    
+    /* Floating particles with pure CSS */
+    .particle {
+        position: fixed;
+        pointer-events: none;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.3);
+        animation: float 6s ease-in-out infinite;
+    }
+    
+    @keyframes float {
+        0%, 100% { transform: translateY(0px) rotate(0deg); opacity: 0.7; }
+        50% { transform: translateY(-20px) rotate(180deg); opacity: 0.3; }
+    }
+    
     /* Custom styling */
     .main-title {
         font-size: 4rem;
         font-weight: 700;
         text-align: center;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        background: linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
         background-clip: text;
         margin-bottom: 0.5rem;
         letter-spacing: -2px;
+        text-shadow: 2px 2px 4px rgba(0,0,0,0.1);
     }
     
     .subtitle {
         text-align: center;
         font-size: 1.2rem;
-        color: #6c757d;
+        color: #ffffff;
         margin-bottom: 2rem;
-    }
-    
-    /* Particles container */
-    #particles-js {
-        position: fixed;
-        width: 100%;
-        height: 100%;
-        top: 0;
-        left: 0;
-        z-index: -1;
-        background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+        text-shadow: 1px 1px 2px rgba(0,0,0,0.2);
     }
     
     /* Card styling */
@@ -91,135 +113,33 @@ st.markdown("""
         box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
     }
     
-    /* Sidebar styling */
-    .css-1d391kg {
-        background: rgba(255, 255, 255, 0.95);
-    }
-    
     /* Privacy note styling */
     .privacy-note {
-        background: rgba(40, 167, 69, 0.1);
+        background: rgba(255, 255, 255, 0.9);
         padding: 1rem;
         border-radius: 10px;
         border-left: 4px solid #28a745;
         margin: 1rem 0;
+        backdrop-filter: blur(5px);
     }
     
-    /* Chat interface styling */
-    .stChatMessage {
-        background: rgba(255, 255, 255, 0.9);
-        border-radius: 10px;
-        margin: 0.5rem 0;
+    /* Content containers */
+    .main .block-container {
+        background: rgba(255, 255, 255, 0.05);
+        border-radius: 15px;
+        backdrop-filter: blur(10px);
+        padding: 2rem;
+        margin-top: 1rem;
     }
 </style>
 
-<div id="particles-js"></div>
-
-<script src="https://cdnjs.cloudflare.com/ajax/libs/particles.js/2.0.0/particles.min.js"></script>
-<script>
-particlesJS("particles-js", {
-  "particles": {
-    "number": {
-      "value": 80,
-      "density": {
-        "enable": true,
-        "value_area": 800
-      }
-    },
-    "color": {
-      "value": "#667eea"
-    },
-    "shape": {
-      "type": "circle",
-      "stroke": {
-        "width": 0,
-        "color": "#000000"
-      }
-    },
-    "opacity": {
-      "value": 0.5,
-      "random": false,
-      "anim": {
-        "enable": false,
-        "speed": 1,
-        "opacity_min": 0.1,
-        "sync": false
-      }
-    },
-    "size": {
-      "value": 3,
-      "random": true,
-      "anim": {
-        "enable": false,
-        "speed": 40,
-        "size_min": 0.1,
-        "sync": false
-      }
-    },
-    "line_linked": {
-      "enable": true,
-      "distance": 150,
-      "color": "#667eea",
-      "opacity": 0.4,
-      "width": 1
-    },
-    "move": {
-      "enable": true,
-      "speed": 6,
-      "direction": "none",
-      "random": false,
-      "straight": false,
-      "out_mode": "out",
-      "bounce": false,
-      "attract": {
-        "enable": false,
-        "rotateX": 600,
-        "rotateY": 1200
-      }
-    }
-  },
-  "interactivity": {
-    "detect_on": "canvas",
-    "events": {
-      "onhover": {
-        "enable": true,
-        "mode": "repulse"
-      },
-      "onclick": {
-        "enable": true,
-        "mode": "push"
-      },
-      "resize": true
-    },
-    "modes": {
-      "grab": {
-        "distance": 400,
-        "line_linked": {
-          "opacity": 1
-        }
-      },
-      "bubble": {
-        "distance": 400,
-        "size": 40,
-        "duration": 2,
-        "opacity": 8,
-        "speed": 3
-      },
-      "repulse": {
-        "distance": 200,
-        "duration": 0.4
-      },
-      "push": {
-        "particles_nb": 4
-      },
-      "remove": {
-        "particles_nb": 2
-      }
-    }
-  },
-  "retina_detect": true
-});
-</script>
+<!-- Add floating particles -->
+<div class="particle" style="left: 10%; top: 20%; width: 8px; height: 8px; animation-delay: 0s;"></div>
+<div class="particle" style="left: 20%; top: 80%; width: 6px; height: 6px; animation-delay: 2s;"></div>
+<div class="particle" style="left: 60%; top: 30%; width: 10px; height: 10px; animation-delay: 4s;"></div>
+<div class="particle" style="left: 80%; top: 70%; width: 7px; height: 7px; animation-delay: 1s;"></div>
+<div class="particle" style="left: 30%; top: 50%; width: 5px; height: 5px; animation-delay: 3s;"></div>
+<div class="particle" style="left: 70%; top: 10%; width: 9px; height: 9px; animation-delay: 5s;"></div>
 """, unsafe_allow_html=True)
 
 # Initialize session state
