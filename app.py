@@ -213,8 +213,8 @@ if 'comment_store' not in st.session_state:
     st.session_state.comment_store = {}
 if 'memo_store' not in st.session_state:
     st.session_state.memo_store = {}
-if 'workspace_data' not in st.session_state:
-    st.session_state.workspace_data = load_workspace_data()
+if 'workspace_initialized' not in st.session_state:
+    st.session_state.workspace_initialized = False
 
 def extract_text_from_pdf(pdf_file):
     """Extract text from PDF using PyPDF2"""
@@ -399,6 +399,19 @@ Please provide a comprehensive answer based on the information provided. If you 
         return f"Error generating response: {str(e)}"
 
 def main():
+    # Initialize workspace data if not already done
+    if not st.session_state.workspace_initialized:
+        try:
+            comment_store, memo_store = load_workspace_data()
+            st.session_state.comment_store = comment_store
+            st.session_state.memo_store = memo_store
+            st.session_state.workspace_initialized = True
+        except:
+            # If loading fails, use empty defaults
+            st.session_state.comment_store = {}
+            st.session_state.memo_store = {}
+            st.session_state.workspace_initialized = True
+    
     # Clean title only
     st.markdown('<h1 class="main-title">Auctum</h1>', unsafe_allow_html=True)
 
@@ -448,10 +461,14 @@ def main():
                         sections = split_text_by_sections(text, headers)
                         st.session_state.cim_sections = sections
                         
-                        # Load existing workspace data
-                        comment_store, memo_store = load_workspace_data()
-                        st.session_state.comment_store = comment_store
-                        st.session_state.memo_store = memo_store
+                        # Initialize workspace data if needed
+                        if not st.session_state.workspace_initialized:
+                            try:
+                                comment_store, memo_store = load_workspace_data()
+                                st.session_state.comment_store = comment_store
+                                st.session_state.memo_store = memo_store
+                            except:
+                                pass  # Use existing empty defaults
                         
                         st.success(f"✅ CIM processed! Extracted {len(text):,} characters and {len(sections)} sections")
                         st.rerun()
