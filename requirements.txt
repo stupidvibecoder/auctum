@@ -1,9 +1,8 @@
 streamlit
 openai
 PyPDF2
-xlwings==0.30.13
 pandas
 numpy
-cryptography
 sentence-transformers
 faiss-cpu
+streamlit-pdf-viewer
