@@ -3,11 +3,7 @@ openai
 PyPDF2
 xlwings==0.30.13
 pandas
-sqlite3
-hashlib
 numpy
 cryptography
 sentence-transformers
 faiss-cpu
-matplotlib
-plotly
