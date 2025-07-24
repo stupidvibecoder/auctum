@@ -35,7 +35,7 @@ except ImportError:
 
 # Page config
 st.set_page_config(
-    page_title="Auctum Enterprise", 
+    page_title="Auctum", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -1004,7 +1004,7 @@ def main():
         # Welcome screen
         col1, col2, col3 = st.columns([1, 2, 1])
         with col2:
-            st.markdown("### 🚀 Welcome to Auctum Enterprise")
+            st.markdown("Auctum")
             
             with st.container():
                 st.markdown("**🧑‍💼 Deal Team Workspace**")
