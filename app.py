@@ -356,41 +356,29 @@ def main():
         # Welcome screen
         col1, col2, col3 = st.columns([1, 2, 1])
         with col2:
-            st.markdown("""
-            <div class="welcome-card">
-                <h3 style="text-align: center; margin-bottom: 1.5rem;">🚀 Welcome to Auctum</h3>
+            # Use Streamlit's native components instead of HTML
+            st.markdown("### 🚀 Welcome to Auctum")
+            
+            with st.container():
+                st.markdown("**📤 Upload Documents**")
+                st.write("Support for PDF CIM documents with intelligent text extraction")
                 
-                <div class="feature-item">
-                    <strong>📤 Upload Documents</strong><br>
-                    Support for PDF CIM documents with intelligent text extraction
-                </div>
+                st.markdown("**🤖 AI Analysis**") 
+                st.write("Get instant insights and comprehensive analysis of investment opportunities")
                 
-                <div class="feature-item">
-                    <strong>🤖 AI Analysis</strong><br>
-                    Get instant insights and comprehensive analysis of investment opportunities
-                </div>
+                st.markdown("**📊 Smart Insights**")
+                st.write("Extract key metrics, financial data, and risk assessments automatically")
                 
-                <div class="feature-item">
-                    <strong>📊 Smart Insights</strong><br>
-                    Extract key metrics, financial data, and risk assessments automatically
-                </div>
+                st.markdown("**💬 Interactive Chat**")
+                st.write("Ask specific questions about your CIM documents and get detailed answers")
                 
-                <div class="feature-item">
-                    <strong>💬 Interactive Chat</strong><br>
-                    Ask specific questions about your CIM documents and get detailed answers
-                </div>
+                st.divider()
                 
-                <hr style="border: 1px solid rgba(255,255,255,0.1); margin: 2rem 0;">
-                
-                <h4 style="text-align: center; margin-bottom: 1rem;">Getting Started</h4>
-                <ol style="padding-left: 1.5rem; color: #94a3b8;">
-                    <li>Enter your OpenAI API key in the sidebar</li>
-                    <li>Upload a CIM PDF file</li>
-                    <li>Click "Process CIM" to analyze</li>
-                    <li>Start asking questions and generating insights!</li>
-                </ol>
-            </div>
-            """, unsafe_allow_html=True)
+                st.markdown("#### Getting Started")
+                st.write("1. Enter your OpenAI API key in the sidebar")
+                st.write("2. Upload a CIM PDF file") 
+                st.write("3. Click 'Process CIM' to analyze")
+                st.write("4. Start asking questions and generating insights!")
     else:
         # Show CIM analysis interface
         show_analysis_interface(api_key)
