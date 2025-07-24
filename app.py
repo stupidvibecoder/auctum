@@ -113,6 +113,10 @@ if 'pdf_file_data' not in st.session_state:
     st.session_state.pdf_file_data = None
 if 'pdf_file_name' not in st.session_state:
     st.session_state.pdf_file_name = None
+if 'current_page' not in st.session_state:
+    st.session_state.current_page = 1
+if 'pdf_reader' not in st.session_state:
+    st.session_state.pdf_reader = None
 
 # Semantic search state
 if 'text_chunks' not in st.session_state:
@@ -127,6 +131,8 @@ if 'embed_model' not in st.session_state:
     st.session_state.embed_model = None
 if 'search_highlights' not in st.session_state:
     st.session_state.search_highlights = []
+if 'selected_result' not in st.session_state:
+    st.session_state.selected_result = None
 
 @st.cache_resource
 def load_embedding_model():
@@ -171,15 +177,28 @@ def chunk_text(text, chunk_size=500, overlap=100, fast_mode=True):
     
     return chunks, []
 
-def find_text_in_pdf_pages(search_terms, pdf_reader):
-    """Find text locations in PDF pages for highlighting"""
-    highlights = []
+def find_text_positions_in_pdf(search_terms, pdf_reader, target_page=None):
+    """Find exact text positions in PDF for better highlighting"""
+    annotations = []
     
-    for page_num, page in enumerate(pdf_reader.pages):
+    if not search_terms or not pdf_reader:
+        return annotations
+    
+    # Focus on specific page if provided, otherwise search all pages
+    pages_to_search = [target_page - 1] if target_page else range(len(pdf_reader.pages))
+    
+    for page_num in pages_to_search:
+        if page_num >= len(pdf_reader.pages):
+            continue
+            
+        page = pdf_reader.pages[page_num]
         page_text = page.extract_text() or ""
         page_text_lower = page_text.lower()
         
         for term in search_terms:
+            if len(term) < 3:  # Skip very short terms
+                continue
+                
             term_lower = term.lower()
             start_pos = 0
             
@@ -188,20 +207,57 @@ def find_text_in_pdf_pages(search_terms, pdf_reader):
                 if pos == -1:
                     break
                 
-                # Create highlight annotation
-                highlights.append({
+                # Create annotation for this term
+                annotations.append({
                     "page": page_num + 1,
-                    "x": 0,  # We'll use basic highlighting without exact coordinates
-                    "y": 0,
-                    "width": 100,
-                    "height": 20,
+                    "type": "highlight",
+                    "text": term,
                     "color": "yellow",
-                    "text": term
+                    "opacity": 0.3
                 })
                 
                 start_pos = pos + 1
+                
+                # Limit annotations per page for performance
+                if len([a for a in annotations if a["page"] == page_num + 1]) >= 10:
+                    break
     
-    return highlights
+    return annotations[:50]  # Limit total annotations for performance
+
+def create_better_annotations(results, search_query):
+    """Create better annotations from search results"""
+    annotations = []
+    
+    if not results:
+        return annotations
+    
+    # Extract terms from query and results
+    search_terms = set()
+    query_words = re.findall(r'\b\w{3,}\b', search_query.lower())
+    search_terms.update(query_words)
+    
+    # Get key terms from top results
+    for result in results[:3]:
+        chunk_words = re.findall(r'\b\w{4,}\b', result['chunk'].lower())
+        # Add words that appear in both query and chunk
+        common_words = set(query_words) & set(chunk_words)
+        search_terms.update(list(common_words)[:5])
+    
+    # Create annotations for each result page
+    for i, result in enumerate(results[:5]):
+        page_num = result['page']
+        
+        # Create multiple annotations for this page
+        for j, term in enumerate(list(search_terms)[:8]):
+            annotations.append({
+                "page": page_num,
+                "type": "highlight", 
+                "text": term,
+                "color": "#FFFF00" if i == 0 else "#FFE066",  # Brighter for top result
+                "opacity": 0.4 if i == 0 else 0.25
+            })
+    
+    return annotations
 
 def extract_search_terms_from_results(results, query):
     """Extract key terms from search results for highlighting"""
@@ -352,6 +408,10 @@ def show_semantic_search():
             with st.spinner("🔍 Searching..."):
                 results = semantic_search(search_query, st.session_state.text_chunks, st.session_state.semantic_index, top_k=5)
             
+            # Store results for PDF viewer
+            st.session_state.last_search_results = results
+            st.session_state.last_search = search_query
+            
             if results:
                 st.success(f"Found {len(results)} relevant sections")
                 
@@ -360,18 +420,48 @@ def show_semantic_search():
                 st.session_state.search_highlights = search_terms
                 
                 # Show results summary
-                st.markdown("**📋 Results:**")
-                for i, result in enumerate(results[:3]):  # Show top 3
+                st.markdown("**📋 Search Results:**")
+                for i, result in enumerate(results[:5]):  # Show top 5
                     similarity_percentage = result['similarity'] * 100
-                    st.markdown(f"**{i+1}.** Page {result['page']} ({similarity_percentage:.0f}% match)")
+                    
+                    # Create clickable result button
+                    result_key = f"result_btn_{i}"
+                    button_text = f"📄 Page {result['page']} ({similarity_percentage:.0f}% match)"
+                    
+                    if st.button(button_text, key=result_key, use_container_width=True):
+                        # Set the selected result and page
+                        st.session_state.selected_result = result
+                        st.session_state.current_page = result['page']
+                        st.rerun()
+                    
+                    # Show preview with highlighting
                     with st.expander(f"Preview", expanded=i==0):
-                        preview = result['chunk'][:200] + "..." if len(result['chunk']) > 200 else result['chunk']
-                        st.write(preview)
+                        preview_text = result['chunk'][:300] + "..." if len(result['chunk']) > 300 else result['chunk']
+                        
+                        # Highlight search terms in preview
+                        highlighted_preview = preview_text
+                        for term in search_terms[:5]:
+                            if term in highlighted_preview.lower():
+                                # Simple text highlighting for preview
+                                pattern = re.compile(re.escape(term), re.IGNORECASE)
+                                highlighted_preview = pattern.sub(f"**{term}**", highlighted_preview)
+                        
+                        st.markdown(highlighted_preview)
+                        
+                        # Show full content option
+                        if st.button(f"📖 Show Full Content", key=f"full_content_{i}"):
+                            st.text_area("Full Content:", result['chunk'], height=200, key=f"content_area_{i}")
                 
-                # Show highlighted terms
+                # Show current highlighting info
                 if search_terms:
                     st.markdown("**🎯 Highlighting:**")
-                    st.write(", ".join(search_terms))
+                    highlighted_terms = ", ".join(list(search_terms)[:8])
+                    st.caption(f"Terms: {highlighted_terms}")
+                    
+                    if st.session_state.selected_result:
+                        st.success(f"📍 Viewing: Page {st.session_state.current_page}")
+            else:
+                st.info("🔍 No results found. Try different search terms.")
             else:
                 st.info("No results found. Try different search terms.")
         
@@ -386,35 +476,73 @@ def show_semantic_search():
     with col2:
         st.subheader("📄 PDF Viewer")
         
+        # Show current page info
+        if st.session_state.current_page > 1:
+            st.info(f"📍 Viewing Page {st.session_state.current_page}")
+        
         # Show PDF viewer
         if st.session_state.pdf_file_data and PDF_VIEWER_AVAILABLE:
             try:
-                # Create annotations for highlighting
+                # Create annotations based on search results
                 annotations = []
-                if st.session_state.search_highlights:
-                    # Simple highlighting - we'll highlight search terms
-                    for i, term in enumerate(st.session_state.search_highlights[:5]):
-                        annotations.append({
-                            "page": 1,  # Start with page 1, could be improved
-                            "type": "highlight",
-                            "text": term,
-                            "color": "#FFFF00"  # Yellow highlight
-                        })
                 
-                # Display PDF with viewer
+                if st.session_state.search_highlights and hasattr(st.session_state, 'last_search_results'):
+                    # Create better annotations from current search
+                    annotations = create_better_annotations(
+                        st.session_state.last_search_results, 
+                        st.session_state.get('last_search', '')
+                    )
+                
+                # Display PDF with viewer - force page update
                 pdf_viewer(
                     st.session_state.pdf_file_data,
-                    annotations=annotations if annotations else None,
+                    annotations=annotations,
+                    pages_to_render=list(range(1, min(len(st.session_state.pdf_reader.pages) + 1, 21))),  # Render first 20 pages
                     width=700,
                     height=800,
-                    key="pdf_viewer"
+                    key=f"pdf_viewer_{st.session_state.current_page}_{len(annotations)}",  # Force refresh when page/annotations change
+                    render_text=True,
+                    pages_vertical_spacing=2
                 )
+                
+                # Page navigation controls
+                st.markdown("### 📖 Navigation")
+                nav_col1, nav_col2, nav_col3 = st.columns(3)
+                
+                total_pages = len(st.session_state.pdf_reader.pages) if st.session_state.pdf_reader else 1
+                
+                with nav_col1:
+                    if st.button("⬅️ Previous", disabled=st.session_state.current_page <= 1):
+                        st.session_state.current_page = max(1, st.session_state.current_page - 1)
+                        st.rerun()
+                
+                with nav_col2:
+                    # Page selector
+                    new_page = st.selectbox(
+                        "Go to page:",
+                        range(1, total_pages + 1),
+                        index=st.session_state.current_page - 1,
+                        key="page_selector"
+                    )
+                    if new_page != st.session_state.current_page:
+                        st.session_state.current_page = new_page
+                        st.rerun()
+                
+                with nav_col3:
+                    if st.button("➡️ Next", disabled=st.session_state.current_page >= total_pages):
+                        st.session_state.current_page = min(total_pages, st.session_state.current_page + 1)
+                        st.rerun()
+                
+                # Show annotations info
+                if annotations:
+                    st.caption(f"🎯 {len(annotations)} highlights on {len(set(a['page'] for a in annotations))} pages")
                 
             except Exception as e:
                 st.error(f"Error displaying PDF: {e}")
                 st.info("Showing basic PDF info instead")
                 st.write(f"📄 **File:** {st.session_state.pdf_file_name}")
                 st.write(f"📝 **Content:** {len(st.session_state.cim_text):,} characters")
+                st.write(f"📖 **Pages:** {len(st.session_state.pdf_reader.pages) if st.session_state.pdf_reader else 'Unknown'}")
         
         elif not PDF_VIEWER_AVAILABLE:
             st.error("❌ PDF viewer requires: `pip install streamlit-pdf-viewer`")
@@ -424,6 +552,14 @@ def show_semantic_search():
                 st.info("📄 PDF uploaded but viewer unavailable")
                 st.write(f"**File:** {st.session_state.pdf_file_name}")
                 st.write(f"**Content:** {len(st.session_state.cim_text):,} characters")
+                
+                # Show text-based search results
+                if st.session_state.search_highlights:
+                    st.markdown("### 📝 Text Results")
+                    if hasattr(st.session_state, 'last_search_results'):
+                        for i, result in enumerate(st.session_state.last_search_results[:3]):
+                            st.markdown(f"**Page {result['page']}:**")
+                            st.text_area(f"Content {i+1}", result['chunk'][:500], height=100, key=f"text_result_{i}")
         
         else:
             st.info("📄 Upload a PDF to view it here")
@@ -433,6 +569,10 @@ def show_semantic_search():
             <div style="border: 2px dashed #666; border-radius: 10px; padding: 50px; text-align: center; background: rgba(30, 41, 59, 0.3);">
                 <h3>📄 PDF Viewer</h3>
                 <p>Upload and process a PDF to view it here with search highlighting</p>
+                <p><strong>Features:</strong></p>
+                <p>• Click search results to jump to pages</p>
+                <p>• Automatic highlighting of search terms</p>
+                <p>• Interactive page navigation</p>
             </div>
             """, unsafe_allow_html=True)
 
@@ -498,6 +638,7 @@ def main():
                     
                     if text:
                         st.session_state.cim_text = text
+                        st.session_state.pdf_reader = pdf_reader  # Store PDF reader
                         
                         # Quick processing for faster loading
                         fast_mode = st.session_state.get('fast_mode', True)
