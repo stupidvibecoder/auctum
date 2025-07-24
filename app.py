@@ -1,39 +1,4 @@
-def map_chunks_to_pages(chunks, pdf_reader):
-    """Map text chunks to PDF page numbers"""
-    page_mapping = []
-    page_texts = []
-    
-    # Extract text from each page
-    for page in pdf_reader.pages:
-        page_text = page.extract_text() or ""
-        page_texts.append(page_text)
-    
-    # Map each chunk to most likely page
-    for chunk in chunks:
-        best_page = 1
-        best_overlap = 0
-        
-        # Take first 200 chars of chunk for matching
-        chunk_sample = chunk[:200].replace('\n', ' ').strip()
-        
-        for page_num, page_text in enumerate(page_texts):
-            page_clean = page_text.replace('\n', ' ').strip()
-            
-            # Find longest common substring
-            overlap = 0
-            for i in range(len(chunk_sample)):
-                for j in range(i + 1, len(chunk_sample) + 1):
-                    substr = chunk_sample[i:j]
-                    if len(substr) > 10 and substr in page_clean:
-                        overlap = max(overlap, len(substr))
-            
-            if overlap > best_overlap:
-                best_overlap = overlap
-                best_page = page_num + 1
-        
-        page_mapping.append(best_page)
-    
-    return page_mappingimport streamlit as st
+import streamlit as st
 import PyPDF2
 import openai
 import tempfile
@@ -261,6 +226,8 @@ def extract_search_terms_from_results(results, query):
                 terms.add(word)
     
     return list(terms)[:10]  # Limit to 10 terms
+
+def map_chunks_to_pages(chunks, pdf_reader):
     """Map text chunks to PDF page numbers"""
     page_mapping = []
     page_texts = []
