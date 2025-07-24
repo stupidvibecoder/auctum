@@ -1,3 +1,4 @@
 streamlit
 openai
 PyPDF2
+xlwings==0.30.13
