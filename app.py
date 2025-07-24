@@ -133,6 +133,8 @@ if 'search_highlights' not in st.session_state:
     st.session_state.search_highlights = []
 if 'selected_result' not in st.session_state:
     st.session_state.selected_result = None
+if 'last_search_results' not in st.session_state:
+    st.session_state.last_search_results = []
 
 @st.cache_resource
 def load_embedding_model():
@@ -177,52 +179,24 @@ def chunk_text(text, chunk_size=500, overlap=100, fast_mode=True):
     
     return chunks, []
 
-def find_text_positions_in_pdf(search_terms, pdf_reader, target_page=None):
-    """Find exact text positions in PDF for better highlighting"""
-    annotations = []
+def extract_search_terms_from_results(results, query):
+    """Extract key terms from search results for highlighting"""
+    terms = set()
     
-    if not search_terms or not pdf_reader:
-        return annotations
+    # Add query words
+    query_words = re.findall(r'\b\w+\b', query.lower())
+    terms.update([word for word in query_words if len(word) > 3])
     
-    # Focus on specific page if provided, otherwise search all pages
-    pages_to_search = [target_page - 1] if target_page else range(len(pdf_reader.pages))
-    
-    for page_num in pages_to_search:
-        if page_num >= len(pdf_reader.pages):
-            continue
-            
-        page = pdf_reader.pages[page_num]
-        page_text = page.extract_text() or ""
-        page_text_lower = page_text.lower()
+    # Extract key phrases from top results
+    for result in results[:3]:  # Top 3 results
+        chunk_text = result['chunk'].lower()
         
-        for term in search_terms:
-            if len(term) < 3:  # Skip very short terms
-                continue
-                
-            term_lower = term.lower()
-            start_pos = 0
-            
-            while True:
-                pos = page_text_lower.find(term_lower, start_pos)
-                if pos == -1:
-                    break
-                
-                # Create annotation for this term
-                annotations.append({
-                    "page": page_num + 1,
-                    "type": "highlight",
-                    "text": term,
-                    "color": "yellow",
-                    "opacity": 0.3
-                })
-                
-                start_pos = pos + 1
-                
-                # Limit annotations per page for performance
-                if len([a for a in annotations if a["page"] == page_num + 1]) >= 10:
-                    break
+        # Find phrases that appear in both query and chunk
+        for word in query_words:
+            if word in chunk_text and len(word) > 3:
+                terms.add(word)
     
-    return annotations[:50]  # Limit total annotations for performance
+    return list(terms)[:10]  # Limit to 10 terms
 
 def create_better_annotations(results, search_query):
     """Create better annotations from search results"""
@@ -258,25 +232,6 @@ def create_better_annotations(results, search_query):
             })
     
     return annotations
-
-def extract_search_terms_from_results(results, query):
-    """Extract key terms from search results for highlighting"""
-    terms = set()
-    
-    # Add query words
-    query_words = re.findall(r'\b\w+\b', query.lower())
-    terms.update([word for word in query_words if len(word) > 3])
-    
-    # Extract key phrases from top results
-    for result in results[:3]:  # Top 3 results
-        chunk_text = result['chunk'].lower()
-        
-        # Find phrases that appear in both query and chunk
-        for word in query_words:
-            if word in chunk_text and len(word) > 3:
-                terms.add(word)
-    
-    return list(terms)[:10]  # Limit to 10 terms
 
 def map_chunks_to_pages(chunks, pdf_reader):
     """Simplified page mapping for speed"""
@@ -462,8 +417,6 @@ def show_semantic_search():
                         st.success(f"📍 Viewing: Page {st.session_state.current_page}")
             else:
                 st.info("🔍 No results found. Try different search terms.")
-            else:
-                st.info("No results found. Try different search terms.")
         
         # Document statistics
         if st.session_state.text_chunks:
