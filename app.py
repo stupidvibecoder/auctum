@@ -187,6 +187,8 @@ if 'cim_sections' not in st.session_state:
     st.session_state.cim_sections = {}
 if 'current_filename' not in st.session_state:
     st.session_state.current_filename = None
+if 'text_chunks' not in st.session_state:
+    st.session_state.text_chunks = []
 
 # PDF extraction and processing functions
 def extract_text_from_pdf(pdf_file):
@@ -252,6 +254,66 @@ def split_text_by_sections(text, headers):
     
     return sections
 
+def chunk_text(text, chunk_size=2000, overlap=200):
+    """Split text into overlapping chunks for better context retrieval"""
+    chunks = []
+    start = 0
+    
+    while start < len(text):
+        end = start + chunk_size
+        chunk = text[start:end]
+        chunks.append({
+            'text': chunk,
+            'start': start,
+            'end': end
+        })
+        start = end - overlap  # Overlap for context continuity
+    
+    return chunks
+
+def find_relevant_chunks(query, chunks, top_k=3):
+    """Find the most relevant chunks for a given query"""
+    # Simple keyword-based relevance scoring
+    query_words = set(query.lower().split())
+    scored_chunks = []
+    
+    for i, chunk in enumerate(chunks):
+        chunk_words = set(chunk['text'].lower().split())
+        score = len(query_words.intersection(chunk_words))
+        scored_chunks.append((score, i, chunk))
+    
+    # Sort by relevance score
+    scored_chunks.sort(key=lambda x: x[0], reverse=True)
+    
+    # Return top k chunks
+    return [chunk for _, _, chunk in scored_chunks[:top_k]]
+
+def get_smart_context(query, full_text, sections, chunks):
+    """Get intelligent context based on the query"""
+    # First, check if query mentions specific sections
+    context_parts = []
+    
+    # Check sections
+    for section_name, section_text in sections.items():
+        if section_name.lower() in query.lower() or any(word in section_text.lower() for word in query.lower().split()):
+            context_parts.append(f"\n\n=== {section_name} ===\n{section_text[:3000]}")
+    
+    # If no specific sections found, use chunk-based retrieval
+    if not context_parts:
+        relevant_chunks = find_relevant_chunks(query, chunks)
+        for chunk in relevant_chunks:
+            context_parts.append(chunk['text'])
+    
+    # Combine context parts
+    context = "\n\n".join(context_parts)
+    
+    # Ensure we don't exceed token limits (roughly 4 tokens per word)
+    max_context_length = 12000  # Increased from 4000
+    if len(context) > max_context_length:
+        context = context[:max_context_length] + "..."
+    
+    return context
+
 def main():
     # Main title
     st.markdown('<h1 class="main-title">Auctum</h1>', unsafe_allow_html=True)
@@ -304,7 +366,12 @@ def main():
                         sections = split_text_by_sections(text, headers)
                         st.session_state.cim_sections = sections
                         
+                        # Create chunks for better retrieval
+                        chunks = chunk_text(text)
+                        st.session_state.text_chunks = chunks
+                        
                         st.success(f"✅ Document processed! Extracted {len(text):,} characters from {len(sections)} sections")
+                        st.info(f"📊 Created {len(chunks)} text chunks for intelligent search")
                         st.rerun()
     
     # Main content area
@@ -318,11 +385,11 @@ def main():
                 st.markdown("**💬 AI-Powered Document Analysis**")
                 st.write("Upload any PDF document and ask questions about its content using advanced AI")
                 
-                st.markdown("**🔍 Intelligent Search**") 
-                st.write("Get instant answers to specific questions about your documents")
+                st.markdown("**🔍 Full Document Search**") 
+                st.write("Intelligently searches through the entire document to find relevant information")
                 
-                st.markdown("**📊 Section Detection**")
-                st.write("Automatically identifies and organizes document sections")
+                st.markdown("**📊 Smart Context Selection**")
+                st.write("Automatically identifies the most relevant sections to answer your questions")
                 
                 st.divider()
                 
@@ -330,7 +397,7 @@ def main():
                 st.write("1. Enter your OpenAI API key in the sidebar")
                 st.write("2. Upload a PDF document") 
                 st.write("3. Click 'Process Document' to analyze")
-                st.write("4. Start asking questions in the chat interface!")
+                st.write("4. Start asking questions - the AI will search the entire document!")
     else:
         # Show chat interface
         show_chat_interface(api_key)
@@ -341,7 +408,7 @@ def show_chat_interface(api_key):
     
     # Document info
     if st.session_state.current_filename:
-        st.info(f"📄 **Document**: {st.session_state.current_filename} | **Size**: {len(st.session_state.cim_text):,} characters | **Sections**: {len(st.session_state.cim_sections)}")
+        st.info(f"📄 **Document**: {st.session_state.current_filename} | **Size**: {len(st.session_state.cim_text):,} characters | **Sections**: {len(st.session_state.cim_sections)} | **Chunks**: {len(st.session_state.text_chunks)}")
     
     # Display chat history
     for i, (question, answer) in enumerate(st.session_state.chat_history):
@@ -362,21 +429,34 @@ def show_chat_interface(api_key):
             
             # Generate and display assistant response
             with st.chat_message("assistant"):
-                with st.spinner("🤔 Analyzing..."):
+                with st.spinner("🤔 Searching entire document..."):
                     try:
                         client = openai.OpenAI(api_key=api_key)
                         
-                        # Use relevant context from document
-                        context = st.session_state.cim_text[:4000]
-                        full_prompt = f"Based on this document: {context}\n\nQuestion: {prompt}"
+                        # Get smart context based on the query
+                        context = get_smart_context(
+                            prompt, 
+                            st.session_state.cim_text,
+                            st.session_state.cim_sections,
+                            st.session_state.text_chunks
+                        )
+                        
+                        # Create system message
+                        system_message = """You are an expert document analyst. You have been given relevant excerpts from a document. 
+                        Answer the user's question based on these excerpts. If the information isn't in the provided context, 
+                        say so clearly. Be specific and cite relevant sections when possible."""
+                        
+                        # Create the full prompt
+                        full_prompt = f"Document excerpts:\n{context}\n\nUser Question: {prompt}"
                         
                         response = client.chat.completions.create(
-                            model="gpt-3.5-turbo",
+                            model="gpt-3.5-turbo-16k",  # Using 16k model for longer context
                             messages=[
-                                {"role": "system", "content": "You are an expert analyst helping analyze documents. Provide clear, concise answers based on the document content."},
+                                {"role": "system", "content": system_message},
                                 {"role": "user", "content": full_prompt}
                             ],
-                            max_tokens=800
+                            max_tokens=1000,
+                            temperature=0.7
                         )
                         
                         answer = response.choices[0].message.content
@@ -421,16 +501,29 @@ def process_quick_action(prompt, api_key):
     try:
         client = openai.OpenAI(api_key=api_key)
         
-        context = st.session_state.cim_text[:4000]
-        full_prompt = f"Based on this document: {context}\n\nQuestion: {prompt}"
+        # For summaries, we want to use multiple chunks to cover more of the document
+        if "summary" in prompt.lower() or "summarize" in prompt.lower():
+            # Get more chunks for comprehensive summary
+            context = get_smart_context(prompt, st.session_state.cim_text, 
+                                      st.session_state.cim_sections, 
+                                      st.session_state.text_chunks)
+        else:
+            context = get_smart_context(prompt, st.session_state.cim_text,
+                                      st.session_state.cim_sections,
+                                      st.session_state.text_chunks)
+        
+        system_message = """You are an expert document analyst. Provide clear, comprehensive answers based on the document content provided."""
+        
+        full_prompt = f"Document content:\n{context}\n\nRequest: {prompt}"
         
         response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-3.5-turbo-16k",
             messages=[
-                {"role": "system", "content": "You are an expert analyst helping analyze documents. Provide clear, concise answers based on the document content."},
+                {"role": "system", "content": system_message},
                 {"role": "user", "content": full_prompt}
             ],
-            max_tokens=800
+            max_tokens=1000,
+            temperature=0.7
         )
         
         answer = response.choices[0].message.content
