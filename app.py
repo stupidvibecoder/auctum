@@ -13,7 +13,7 @@ import base64
 
 # Page config
 st.set_page_config(
-    page_title="Auctum Enterprise", 
+    page_title="Auctum", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
