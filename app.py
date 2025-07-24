@@ -254,7 +254,7 @@ def split_text_by_sections(text, headers):
 
 def main():
     # Main title
-    st.markdown('<h1 class="main-title">Auctum Enterprise</h1>', unsafe_allow_html=True)
+    st.markdown('<h1 class="main-title">Auctum</h1>', unsafe_allow_html=True)
     
     # Privacy note
     st.markdown("""
@@ -312,7 +312,7 @@ def main():
         # Welcome screen
         col1, col2, col3 = st.columns([1, 2, 1])
         with col2:
-            st.markdown("### 🚀 Welcome to Auctum Enterprise")
+            st.markdown("### 🚀 Welcome to Auctum")
             
             with st.container():
                 st.markdown("**💬 AI-Powered Document Analysis**")
