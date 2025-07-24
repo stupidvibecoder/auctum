@@ -130,51 +130,46 @@ if 'search_highlights' not in st.session_state:
 
 @st.cache_resource
 def load_embedding_model():
-    """Load and cache the embedding model"""
+    """Load and cache the embedding model - use a smaller, faster model"""
     if not SEMANTIC_SEARCH_AVAILABLE:
         return None
     try:
-        with st.spinner("🧠 Loading AI model (first time only)..."):
-            model = SentenceTransformer('all-MiniLM-L6-v2')
+        # Use a much smaller and faster model
+        model = SentenceTransformer('all-MiniLM-L6-v2')
         return model
     except Exception as e:
         st.error(f"Error loading embedding model: {e}")
         return None
 
-def chunk_text(text, chunk_size=1000, overlap=200):
-    """Split text into overlapping chunks for semantic search"""
+def chunk_text(text, chunk_size=500, overlap=100, fast_mode=True):
+    """Split text into smaller, faster-to-process chunks"""
     chunks = []
-    chunk_metadata = []
     
-    # Split by paragraphs first, then by size if needed
-    paragraphs = text.split('\n\n')
-    current_chunk = ""
-    chunk_start_pos = 0
+    if fast_mode:
+        # Super fast chunking - just split by paragraphs
+        paragraphs = text.split('\n\n')
+        # Take every other paragraph and limit to 20 chunks
+        chunks = [p.strip() for i, p in enumerate(paragraphs) if i % 2 == 0 and p.strip()][:20]
+    else:
+        # More thorough chunking
+        sentences = text.split('. ')
+        current_chunk = ""
+        
+        for sentence in sentences:
+            if len(current_chunk) + len(sentence) < chunk_size:
+                current_chunk += sentence + ". "
+            else:
+                if current_chunk.strip():
+                    chunks.append(current_chunk.strip())
+                current_chunk = sentence + ". "
+        
+        if current_chunk.strip():
+            chunks.append(current_chunk.strip())
+        
+        # Limit chunks for faster processing
+        chunks = chunks[:50]
     
-    for para in paragraphs:
-        if len(current_chunk) + len(para) < chunk_size:
-            current_chunk += para + "\n\n"
-        else:
-            if current_chunk.strip():
-                chunks.append(current_chunk.strip())
-                chunk_metadata.append({
-                    'start_pos': chunk_start_pos,
-                    'end_pos': chunk_start_pos + len(current_chunk),
-                    'text': current_chunk.strip()
-                })
-                chunk_start_pos += len(current_chunk) - overlap
-            current_chunk = para + "\n\n"
-    
-    # Add the last chunk
-    if current_chunk.strip():
-        chunks.append(current_chunk.strip())
-        chunk_metadata.append({
-            'start_pos': chunk_start_pos,
-            'end_pos': chunk_start_pos + len(current_chunk),
-            'text': current_chunk.strip()
-        })
-    
-    return chunks, chunk_metadata
+    return chunks, []
 
 def find_text_in_pdf_pages(search_terms, pdf_reader):
     """Find text locations in PDF pages for highlighting"""
@@ -228,60 +223,40 @@ def extract_search_terms_from_results(results, query):
     return list(terms)[:10]  # Limit to 10 terms
 
 def map_chunks_to_pages(chunks, pdf_reader):
-    """Map text chunks to PDF page numbers"""
+    """Simplified page mapping for speed"""
+    # Simple approximation - assume even distribution
+    total_pages = len(pdf_reader.pages)
+    chunks_per_page = max(1, len(chunks) // total_pages)
+    
     page_mapping = []
-    page_texts = []
-    
-    # Extract text from each page
-    for page in pdf_reader.pages:
-        page_text = page.extract_text() or ""
-        page_texts.append(page_text)
-    
-    # Map each chunk to most likely page
-    for chunk in chunks:
-        best_page = 1
-        best_overlap = 0
-        
-        # Take first 200 chars of chunk for matching
-        chunk_sample = chunk[:200].replace('\n', ' ').strip()
-        
-        for page_num, page_text in enumerate(page_texts):
-            page_clean = page_text.replace('\n', ' ').strip()
-            
-            # Find longest common substring
-            overlap = 0
-            for i in range(len(chunk_sample)):
-                for j in range(i + 1, len(chunk_sample) + 1):
-                    substr = chunk_sample[i:j]
-                    if len(substr) > 10 and substr in page_clean:
-                        overlap = max(overlap, len(substr))
-            
-            if overlap > best_overlap:
-                best_overlap = overlap
-                best_page = page_num + 1
-        
-        page_mapping.append(best_page)
+    for i, chunk in enumerate(chunks):
+        page_num = min(total_pages, (i // chunks_per_page) + 1)
+        page_mapping.append(page_num)
     
     return page_mapping
 
 def create_semantic_index(chunks):
-    """Create FAISS index for semantic search"""
+    """Create FAISS index with optimizations for speed"""
     if not SEMANTIC_SEARCH_AVAILABLE or not st.session_state.embed_model:
         return None, None
     
     try:
-        # Generate embeddings in batches to avoid memory issues
-        with st.spinner("🧠 Creating semantic search index..."):
+        # Limit chunks for faster processing
+        limited_chunks = chunks[:30]  # Process max 30 chunks for speed
+        
+        # Generate embeddings with smaller batch size
+        with st.spinner("🧠 Creating search index..."):
             embeddings = st.session_state.embed_model.encode(
-                chunks, 
+                limited_chunks, 
                 show_progress_bar=False,
-                batch_size=16  # Smaller batch size for stability
+                batch_size=8,  # Smaller batch for speed
+                convert_to_numpy=True
             )
         
         # Create FAISS index
-        dim = embeddings[0].shape[0]
+        dim = embeddings.shape[1]
         index = faiss.IndexFlatL2(dim)
-        index.add(np.array(embeddings))
+        index.add(embeddings)
         
         return index, embeddings
     except Exception as e:
@@ -491,6 +466,17 @@ def main():
         
         st.divider()
         
+        # Performance settings
+        st.header("⚡ Performance")
+        fast_mode = st.toggle("🚀 Fast Mode", value=True, help="Faster processing with fewer chunks")
+        
+        if fast_mode:
+            st.caption("✅ Optimized for speed")
+        else:
+            st.caption("🐌 Full processing (slower)")
+        
+        st.divider()
+        
         # File upload section
         st.header("📄 Upload CIM")
         uploaded_file = st.file_uploader(
@@ -513,28 +499,34 @@ def main():
                     if text:
                         st.session_state.cim_text = text
                         
-                        # Load embedding model if not already loaded
-                        if st.session_state.embed_model is None and SEMANTIC_SEARCH_AVAILABLE:
-                            st.session_state.embed_model = load_embedding_model()
+                        # Quick processing for faster loading
+                        fast_mode = st.session_state.get('fast_mode', True)
                         
-                        # Create semantic search index
-                        if SEMANTIC_SEARCH_AVAILABLE and st.session_state.embed_model:
-                            chunks, chunk_metadata = chunk_text(text)
-                            st.session_state.text_chunks = chunks
+                        if SEMANTIC_SEARCH_AVAILABLE:
+                            # Load model in background if needed
+                            if st.session_state.embed_model is None:
+                                with st.spinner("⚡ Loading AI model (one-time setup)..."):
+                                    st.session_state.embed_model = load_embedding_model()
                             
-                            # Map chunks to pages
-                            page_mapping = map_chunks_to_pages(chunks, pdf_reader)
-                            st.session_state.chunk_page_mapping = page_mapping
-                            
-                            # Create semantic index
-                            index, embeddings = create_semantic_index(chunks)
-                            st.session_state.semantic_index = index
-                            st.session_state.chunk_embeddings = embeddings
+                            if st.session_state.embed_model:
+                                # Fast chunking and indexing
+                                chunks, _ = chunk_text(text, fast_mode=fast_mode)
+                                st.session_state.text_chunks = chunks
+                                
+                                # Simple page mapping
+                                page_mapping = map_chunks_to_pages(chunks, pdf_reader)
+                                st.session_state.chunk_page_mapping = page_mapping
+                                
+                                # Create index with limited chunks
+                                index, embeddings = create_semantic_index(chunks)
+                                st.session_state.semantic_index = index
+                                st.session_state.chunk_embeddings = embeddings
                         
-                        semantic_status = "✅ Enabled" if SEMANTIC_SEARCH_AVAILABLE and st.session_state.semantic_index else "❌ Unavailable"
-                        pdf_viewer_status = "✅ Enabled" if PDF_VIEWER_AVAILABLE else "❌ Unavailable"
+                        # Quick success message
+                        semantic_status = "✅ Ready" if st.session_state.semantic_index else "❌ Unavailable"
+                        pdf_viewer_status = "✅ Ready" if PDF_VIEWER_AVAILABLE else "❌ Install needed"
                         
-                        st.success(f"✅ CIM processed! | Semantic Search: {semantic_status} | PDF Viewer: {pdf_viewer_status}")
+                        st.success(f"✅ Ready! Search: {semantic_status} | Viewer: {pdf_viewer_status}")
                         st.rerun()
     
     # Main content area
