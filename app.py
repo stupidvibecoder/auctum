@@ -165,6 +165,16 @@ st.markdown("""
         border-radius: 12px;
         margin-bottom: 1rem;
     }
+    
+    /* Debug info styling */
+    .debug-info {
+        background: rgba(59, 130, 246, 0.1);
+        border: 1px solid rgba(59, 130, 246, 0.3);
+        border-radius: 8px;
+        padding: 0.5rem 1rem;
+        font-size: 0.9rem;
+        margin: 0.5rem 0;
+    }
 </style>
 
 <!-- Add floating particles -->
@@ -189,6 +199,8 @@ if 'current_filename' not in st.session_state:
     st.session_state.current_filename = None
 if 'text_chunks' not in st.session_state:
     st.session_state.text_chunks = []
+if 'debug_mode' not in st.session_state:
+    st.session_state.debug_mode = False
 
 # PDF extraction and processing functions
 def extract_text_from_pdf(pdf_file):
@@ -196,10 +208,10 @@ def extract_text_from_pdf(pdf_file):
     try:
         pdf_reader = PyPDF2.PdfReader(pdf_file)
         text = ""
-        for page in pdf_reader.pages:
+        for page_num, page in enumerate(pdf_reader.pages):
             page_text = page.extract_text()
             if page_text:
-                text += page_text + "\n\n"
+                text += f"\n\n--- PAGE {page_num + 1} ---\n\n" + page_text
         return text
     except Exception as e:
         st.error(f"Error reading PDF: {e}")
@@ -254,7 +266,7 @@ def split_text_by_sections(text, headers):
     
     return sections
 
-def chunk_text(text, chunk_size=2000, overlap=200):
+def chunk_text(text, chunk_size=1500, overlap=300):
     """Split text into overlapping chunks for better context retrieval"""
     chunks = []
     start = 0
@@ -262,57 +274,113 @@ def chunk_text(text, chunk_size=2000, overlap=200):
     while start < len(text):
         end = start + chunk_size
         chunk = text[start:end]
+        
+        # Try to break at sentence boundaries
+        if end < len(text):
+            last_period = chunk.rfind('.')
+            if last_period > chunk_size * 0.8:
+                end = start + last_period + 1
+                chunk = text[start:end]
+        
         chunks.append({
             'text': chunk,
             'start': start,
-            'end': end
+            'end': end,
+            'index': len(chunks)
         })
-        start = end - overlap  # Overlap for context continuity
+        start = end - overlap
     
     return chunks
 
-def find_relevant_chunks(query, chunks, top_k=3):
-    """Find the most relevant chunks for a given query"""
-    # Simple keyword-based relevance scoring
-    query_words = set(query.lower().split())
+def search_for_financial_terms(text):
+    """Search specifically for financial terms and amounts"""
+    financial_patterns = [
+        r'\$[\d,]+\.?\d*\s*(million|billion|thousand)?',
+        r'€[\d,]+\.?\d*\s*(million|billion|thousand)?',
+        r'[\d,]+\.?\d*\s*(million|billion|thousand)?\s*(USD|EUR|dollars|euros)',
+        r'revenue[s]?\s*:?\s*\$?€?[\d,]+',
+        r'profit[s]?\s*:?\s*\$?€?[\d,]+',
+        r'debt[s]?\s*:?\s*\$?€?[\d,]+',
+        r'financial\s+(?:details|information|data|metrics)',
+        r'senior\s+secured\s+credit\s+facilities',
+    ]
+    
+    findings = []
+    for pattern in financial_patterns:
+        matches = re.finditer(pattern, text, re.IGNORECASE)
+        for match in matches:
+            start = max(0, match.start() - 200)
+            end = min(len(text), match.end() + 200)
+            context = text[start:end]
+            findings.append({
+                'match': match.group(),
+                'context': context,
+                'position': match.start()
+            })
+    
+    return findings
+
+def find_relevant_chunks_advanced(query, chunks, text, top_k=5):
+    """Advanced chunk finding with multiple strategies"""
+    query_lower = query.lower()
     scored_chunks = []
     
+    # Strategy 1: Direct keyword matching
+    keywords = set(query_lower.split())
+    financial_keywords = {'financial', 'finance', 'revenue', 'profit', 'debt', 'million', 'billion', 
+                         'dollar', 'euro', 'usd', 'eur', 'credit', 'facilities', 'senior', 'secured'}
+    
+    # Add financial keywords if query seems financial
+    if any(kw in query_lower for kw in ['financial', 'finance', 'money', 'revenue', 'profit']):
+        keywords.update(financial_keywords)
+    
+    # Strategy 2: Search for specific financial amounts if mentioned
+    financial_findings = search_for_financial_terms(text)
+    
     for i, chunk in enumerate(chunks):
-        chunk_words = set(chunk['text'].lower().split())
-        score = len(query_words.intersection(chunk_words))
+        chunk_text_lower = chunk['text'].lower()
+        score = 0
+        
+        # Keyword matching score
+        for keyword in keywords:
+            score += chunk_text_lower.count(keyword) * 2
+        
+        # Financial pattern matching score
+        for finding in financial_findings:
+            if finding['position'] >= chunk['start'] and finding['position'] <= chunk['end']:
+                score += 10  # High score for chunks containing financial data
+        
+        # Boost score for chunks containing dollar or euro symbols
+        score += chunk['text'].count('$') * 3
+        score += chunk['text'].count('€') * 3
+        
         scored_chunks.append((score, i, chunk))
     
-    # Sort by relevance score
+    # Sort by score
     scored_chunks.sort(key=lambda x: x[0], reverse=True)
     
     # Return top k chunks
     return [chunk for _, _, chunk in scored_chunks[:top_k]]
 
-def get_smart_context(query, full_text, sections, chunks):
-    """Get intelligent context based on the query"""
-    # First, check if query mentions specific sections
-    context_parts = []
+def get_comprehensive_context(query, full_text, chunks):
+    """Get comprehensive context using multiple strategies"""
+    query_lower = query.lower()
     
-    # Check sections
-    for section_name, section_text in sections.items():
-        if section_name.lower() in query.lower() or any(word in section_text.lower() for word in query.lower().split()):
-            context_parts.append(f"\n\n=== {section_name} ===\n{section_text[:3000]}")
+    # First, try to find specific financial mentions
+    if any(term in query_lower for term in ['financial', 'finance', 'money', 'revenue', 'debt', 'million']):
+        financial_findings = search_for_financial_terms(full_text)
+        if financial_findings:
+            # Create context from financial findings
+            context_parts = []
+            for finding in financial_findings[:5]:  # Top 5 financial mentions
+                context_parts.append(f"[Financial mention: {finding['match']}]\n{finding['context']}")
+            return "\n\n---\n\n".join(context_parts)
     
-    # If no specific sections found, use chunk-based retrieval
-    if not context_parts:
-        relevant_chunks = find_relevant_chunks(query, chunks)
-        for chunk in relevant_chunks:
-            context_parts.append(chunk['text'])
+    # Otherwise, use chunk-based retrieval
+    relevant_chunks = find_relevant_chunks_advanced(query, chunks, full_text)
+    context_parts = [f"[Chunk {chunk['index']+1}]\n{chunk['text']}" for chunk in relevant_chunks]
     
-    # Combine context parts
-    context = "\n\n".join(context_parts)
-    
-    # Ensure we don't exceed token limits (roughly 4 tokens per word)
-    max_context_length = 12000  # Increased from 4000
-    if len(context) > max_context_length:
-        context = context[:max_context_length] + "..."
-    
-    return context
+    return "\n\n---\n\n".join(context_parts)
 
 def main():
     # Main title
@@ -344,6 +412,10 @@ def main():
         
         st.divider()
         
+        # Debug mode toggle
+        st.session_state.debug_mode = st.checkbox("🔍 Debug Mode", value=st.session_state.debug_mode,
+                                                  help="Show additional information about document processing")
+        
         # File upload section
         st.header("📄 Upload Document")
         uploaded_file = st.file_uploader(
@@ -359,19 +431,29 @@ def main():
                     if text:
                         st.session_state.cim_text = text
                         st.session_state.current_filename = uploaded_file.name
-                        st.session_state.chat_history = []  # Reset chat history for new document
+                        st.session_state.chat_history = []
                         
                         # Extract sections
                         headers = extract_section_headers(text)
                         sections = split_text_by_sections(text, headers)
                         st.session_state.cim_sections = sections
                         
-                        # Create chunks for better retrieval
+                        # Create chunks
                         chunks = chunk_text(text)
                         st.session_state.text_chunks = chunks
                         
-                        st.success(f"✅ Document processed! Extracted {len(text):,} characters from {len(sections)} sections")
-                        st.info(f"📊 Created {len(chunks)} text chunks for intelligent search")
+                        st.success(f"✅ Document processed! Extracted {len(text):,} characters")
+                        st.info(f"📊 Created {len(chunks)} searchable chunks")
+                        
+                        # Debug: Show sample of financial findings
+                        if st.session_state.debug_mode:
+                            financial_findings = search_for_financial_terms(text)
+                            if financial_findings:
+                                st.markdown("### 💰 Financial Terms Found:")
+                                for i, finding in enumerate(financial_findings[:5]):
+                                    st.markdown(f'<div class="debug-info">Match {i+1}: {finding["match"]}</div>', 
+                                              unsafe_allow_html=True)
+                        
                         st.rerun()
     
     # Main content area
@@ -388,8 +470,8 @@ def main():
                 st.markdown("**🔍 Full Document Search**") 
                 st.write("Intelligently searches through the entire document to find relevant information")
                 
-                st.markdown("**📊 Smart Context Selection**")
-                st.write("Automatically identifies the most relevant sections to answer your questions")
+                st.markdown("**📊 Financial Data Extraction**")
+                st.write("Automatically detects and extracts financial figures, amounts, and metrics")
                 
                 st.divider()
                 
@@ -429,34 +511,46 @@ def show_chat_interface(api_key):
             
             # Generate and display assistant response
             with st.chat_message("assistant"):
-                with st.spinner("🤔 Searching entire document..."):
+                with st.spinner("🔄 Searching entire document..."):
                     try:
                         client = openai.OpenAI(api_key=api_key)
                         
-                        # Get smart context based on the query
-                        context = get_smart_context(
+                        # Get comprehensive context
+                        context = get_comprehensive_context(
                             prompt, 
                             st.session_state.cim_text,
-                            st.session_state.cim_sections,
                             st.session_state.text_chunks
                         )
                         
-                        # Create system message
-                        system_message = """You are an expert document analyst. You have been given relevant excerpts from a document. 
-                        Answer the user's question based on these excerpts. If the information isn't in the provided context, 
-                        say so clearly. Be specific and cite relevant sections when possible."""
+                        # Debug: Show what context we're sending
+                        if st.session_state.debug_mode:
+                            with st.expander("🔍 Debug: Context being sent to AI"):
+                                st.text(context[:1000] + "..." if len(context) > 1000 else context)
                         
-                        # Create the full prompt
-                        full_prompt = f"Document excerpts:\n{context}\n\nUser Question: {prompt}"
+                        # System message
+                        system_message = """You are an expert document analyst. You have access to excerpts from a document.
+                        Your job is to answer questions based on the provided excerpts. Be specific and cite the exact 
+                        figures or information you find. If you cannot find the requested information in the provided 
+                        excerpts, clearly state that."""
+                        
+                        # Create the prompt
+                        full_prompt = f"""Based on these document excerpts, please answer the user's question.
+                        
+Document Excerpts:
+{context}
+
+User Question: {prompt}
+
+Please provide a specific answer based on the excerpts above. If you find financial figures, cite them exactly."""
                         
                         response = client.chat.completions.create(
-                            model="gpt-3.5-turbo-16k",  # Using 16k model for longer context
+                            model="gpt-4-turbo-preview" if "gpt-4" in api_key else "gpt-3.5-turbo-16k",
                             messages=[
                                 {"role": "system", "content": system_message},
                                 {"role": "user", "content": full_prompt}
                             ],
                             max_tokens=1000,
-                            temperature=0.7
+                            temperature=0.3  # Lower temperature for more focused answers
                         )
                         
                         answer = response.choices[0].message.content
@@ -467,31 +561,39 @@ def show_chat_interface(api_key):
                         
                     except Exception as e:
                         st.error(f"Error: {e}")
+                        if st.session_state.debug_mode:
+                            st.exception(e)
                         st.session_state.chat_history[-1] = (prompt, f"Error: {e}")
         else:
             st.warning("⚠️ Please enter your OpenAI API key to use the chat feature")
     
     # Quick action buttons
     st.markdown("### 💡 Quick Actions")
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        if st.button("📊 Summarize Document", use_container_width=True):
+        if st.button("📊 Summarize", use_container_width=True):
             if api_key:
-                prompt = "Please provide a comprehensive summary of this document, including key points and main findings."
+                prompt = "Provide a comprehensive summary of this document"
                 process_quick_action(prompt, api_key)
     
     with col2:
-        if st.button("🔍 Extract Key Points", use_container_width=True):
+        if st.button("💰 Find Financials", use_container_width=True):
             if api_key:
-                prompt = "What are the most important key points and takeaways from this document?"
+                prompt = "Find and list all financial figures, amounts, revenues, debts, or monetary values mentioned in this document"
                 process_quick_action(prompt, api_key)
     
     with col3:
+        if st.button("🔍 Key Points", use_container_width=True):
+            if api_key:
+                prompt = "What are the most important key points from this document?"
+                process_quick_action(prompt, api_key)
+    
+    with col4:
         if st.button("📋 List Sections", use_container_width=True):
             if st.session_state.cim_sections:
                 sections_list = "\n".join([f"• {section}" for section in st.session_state.cim_sections.keys()])
-                st.session_state.chat_history.append(("List all sections in this document", f"Here are the sections found in the document:\n\n{sections_list}"))
+                st.session_state.chat_history.append(("List all sections", f"Document sections:\n\n{sections_list}"))
                 st.rerun()
 
 def process_quick_action(prompt, api_key):
@@ -501,29 +603,26 @@ def process_quick_action(prompt, api_key):
     try:
         client = openai.OpenAI(api_key=api_key)
         
-        # For summaries, we want to use multiple chunks to cover more of the document
-        if "summary" in prompt.lower() or "summarize" in prompt.lower():
-            # Get more chunks for comprehensive summary
-            context = get_smart_context(prompt, st.session_state.cim_text, 
-                                      st.session_state.cim_sections, 
-                                      st.session_state.text_chunks)
-        else:
-            context = get_smart_context(prompt, st.session_state.cim_text,
-                                      st.session_state.cim_sections,
-                                      st.session_state.text_chunks)
+        # Get comprehensive context
+        context = get_comprehensive_context(prompt, st.session_state.cim_text, st.session_state.text_chunks)
         
-        system_message = """You are an expert document analyst. Provide clear, comprehensive answers based on the document content provided."""
+        system_message = """You are an expert document analyst. Provide detailed, accurate answers based on the document content."""
         
-        full_prompt = f"Document content:\n{context}\n\nRequest: {prompt}"
+        full_prompt = f"""Document excerpts:
+{context}
+
+Request: {prompt}
+
+Please provide a comprehensive answer based on the document excerpts above."""
         
         response = client.chat.completions.create(
-            model="gpt-3.5-turbo-16k",
+            model="gpt-4-turbo-preview" if "gpt-4" in api_key else "gpt-3.5-turbo-16k",
             messages=[
                 {"role": "system", "content": system_message},
                 {"role": "user", "content": full_prompt}
             ],
-            max_tokens=1000,
-            temperature=0.7
+            max_tokens=1500,
+            temperature=0.3
         )
         
         answer = response.choices[0].message.content
