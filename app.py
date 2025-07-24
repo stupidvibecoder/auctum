@@ -9,8 +9,15 @@ import pandas as pd
 import sqlite3
 import hashlib
 from datetime import datetime, timedelta
-from cryptography.fernet import Fernet
 import base64
+
+# Optional encryption support
+try:
+    from cryptography.fernet import Fernet
+    ENCRYPTION_AVAILABLE = True
+except ImportError:
+    ENCRYPTION_AVAILABLE = False
+
 try:
     import xlwings as xw
     XLWINGS_AVAILABLE = True
@@ -395,6 +402,9 @@ init_database()
 # Compliance and encryption functions
 def get_encryption_key():
     """Get or create encryption key for compliance mode"""
+    if not ENCRYPTION_AVAILABLE:
+        return None
+    
     key_file = "encryption.key"
     if os.path.exists(key_file):
         with open(key_file, 'rb') as f:
@@ -407,21 +417,23 @@ def get_encryption_key():
 
 def encrypt_content(content):
     """Encrypt content for compliance mode"""
-    if st.session_state.compliance_mode:
+    if st.session_state.compliance_mode and ENCRYPTION_AVAILABLE:
         key = get_encryption_key()
-        f = Fernet(key)
-        return base64.b64encode(f.encrypt(content.encode())).decode()
+        if key:
+            f = Fernet(key)
+            return base64.b64encode(f.encrypt(content.encode())).decode()
     return content
 
 def decrypt_content(encrypted_content):
     """Decrypt content for compliance mode"""
-    if st.session_state.compliance_mode and encrypted_content:
+    if st.session_state.compliance_mode and ENCRYPTION_AVAILABLE and encrypted_content:
         try:
             key = get_encryption_key()
-            f = Fernet(key)
-            return f.decrypt(base64.b64decode(encrypted_content.encode())).decode()
+            if key:
+                f = Fernet(key)
+                return f.decrypt(base64.b64decode(encrypted_content.encode())).decode()
         except:
-            return encrypted_content
+            pass
     return encrypted_content
 
 def log_audit_action(action, details=None, document_id=None):
@@ -708,15 +720,20 @@ def main():
     # Compliance mode toggle
     col1, col2, col3 = st.columns([2, 1, 1])
     with col2:
-        compliance_enabled = st.toggle("🔒 Compliance Mode", value=st.session_state.compliance_mode)
-        if compliance_enabled != st.session_state.compliance_mode:
-            st.session_state.compliance_mode = compliance_enabled
-            log_audit_action(f"Compliance Mode {'Enabled' if compliance_enabled else 'Disabled'}")
-            st.rerun()
+        if ENCRYPTION_AVAILABLE:
+            compliance_enabled = st.toggle("🔒 Compliance Mode", value=st.session_state.compliance_mode)
+            if compliance_enabled != st.session_state.compliance_mode:
+                st.session_state.compliance_mode = compliance_enabled
+                log_audit_action(f"Compliance Mode {'Enabled' if compliance_enabled else 'Disabled'}")
+                st.rerun()
+        else:
+            st.button("🔒 Compliance Mode", disabled=True, help="Requires cryptography library")
     
     with col3:
-        if st.session_state.compliance_mode:
+        if st.session_state.compliance_mode and ENCRYPTION_AVAILABLE:
             st.markdown('<div class="compliance-badge">🔒 COMPLIANCE ACTIVE</div>', unsafe_allow_html=True)
+        elif not ENCRYPTION_AVAILABLE:
+            st.caption("⚠️ Encryption unavailable on cloud")
     
     # Privacy note with compliance information
     privacy_text = """
@@ -725,8 +742,10 @@ def main():
         Your documents are processed securely and never stored on external servers. All analysis uses enterprise-grade AI with full compliance.
     """
     
-    if st.session_state.compliance_mode:
+    if st.session_state.compliance_mode and ENCRYPTION_AVAILABLE:
         privacy_text += """<br><strong>Compliance Mode Active:</strong> All documents encrypted, full audit logging enabled, user access controls enforced."""
+    elif not ENCRYPTION_AVAILABLE:
+        privacy_text += """<br><strong>Note:</strong> Full encryption features require local deployment. Cloud version uses secure processing without encryption."""
     
     privacy_text += "</div>"
     st.markdown(privacy_text, unsafe_allow_html=True)
