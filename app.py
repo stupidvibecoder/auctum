@@ -660,3 +660,43 @@ def main():
 
 if __name__ == "__main__":
     main()
+# Example function to add:
+
+def generate_investment_memo(cim_text, query_focus="business model"):
+    """Generate an investment memo section using OpenAI"""
+    if not cim_text or not openai.api_key:
+        return "No CIM text loaded or API key not set."
+
+
+    prompt = f"""
+    You are an investment analyst writing a short internal memo based on the following text:
+
+    ---
+    {cim_text[:4000]}  # Truncate for token safety
+    ---
+
+    Write a 5-paragraph memo focused on: {query_focus}
+    Format: Executive Summary, Business Overview, Key Metrics, Risks, Conclusion.
+    """
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=800,
+            temperature=0.4
+        )
+        return response['choices'][0]['message']['content']
+    except Exception as e:
+        return f"Error generating memo: {e}"
+
+# Then inside your Streamlit UI (e.g., right under PDF viewer), insert:
+
+# --- Investment Memo Generator ---
+if st.session_state.cim_text and api_key:
+    openai.api_key = api_key
+    st.subheader("📝 AI-Generated Investment Memo")
+    memo_focus = st.text_input("Focus (e.g., risks, growth levers, business model):", "business model")
+    if st.button("✍️ Generate Memo"):
+        with st.spinner("Generating memo..."):
+            memo = generate_investment_memo(st.session_state.cim_text, memo_focus)
+            st.text_area("Generated Memo", memo, height=300)
